@@ -1,0 +1,331 @@
+/**
+ * GemRenderer3D V6 — Top-level 3D gem component for React Native screens.
+ *
+ * WHAT CHANGED (V5 → V6):
+ *   - TRUE 360° rotation: all pitch clamps removed. Quaternion = no limits.
+ *   - Delayed auto-rotate resume: waits 800ms after user lifts finger
+ *   - Asymptotic velocity decay: fast spins slow naturally, slow spins sustain
+ *   - Velocity smoothing via EMA for premium fling momentum
+ *
+ * CRITICAL: Does NOT key GemView by tier/shape.
+ * GemView is persistent — all changes are lerped or swapped in-place.
+ *
+ * Fallback: premium gradient placeholder, NEVER a flat 2D polygon.
+ */
+
+import React, { useRef, useState, useEffect, useCallback } from 'react';
+import { View, StyleSheet, ViewStyle, Text, AppState, AppStateStatus } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { GemView, RotationState } from './GemView';
+import { Gem3DErrorBoundary } from './Gem3DErrorBoundary';
+import { TierKey, TIER_PROFILES } from '../engine/tierProfiles';
+import { GemShapeKey } from './geometries';
+import { hapticSelection } from '../utils/haptics';
+
+// ─── Pure-JS quaternion math (no THREE dependency) ──────────────────────────
+
+/** Multiply two quaternions: result = a * b */
+function qMul(
+  ax: number, ay: number, az: number, aw: number,
+  bx: number, by: number, bz: number, bw: number,
+): { x: number; y: number; z: number; w: number } {
+  return {
+    x: aw * bx + ax * bw + ay * bz - az * by,
+    y: aw * by - ax * bz + ay * bw + az * bx,
+    z: aw * bz + ax * by - ay * bx + az * bw,
+    w: aw * bw - ax * bx - ay * by - az * bz,
+  };
+}
+
+/** Create quaternion from axis-angle rotation */
+function qFromAxisAngle(ax: number, ay: number, az: number, angle: number) {
+  const ha = angle * 0.5;
+  const s = Math.sin(ha);
+  return { x: ax * s, y: ay * s, z: az * s, w: Math.cos(ha) };
+}
+
+/** Normalize a quaternion to unit length */
+function qNormalize(x: number, y: number, z: number, w: number) {
+  const len = Math.sqrt(x * x + y * y + z * z + w * w) || 1;
+  return { x: x / len, y: y / len, z: z / len, w: w / len };
+}
+
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+interface Props {
+  tierKey: TierKey;
+  shape?: GemShapeKey;
+  size?: number;
+  viewWidth?: number;
+  viewHeight?: number;
+  interactive?: boolean;
+  onTap?: () => void;
+  style?: ViewStyle;
+  gemScale?: number;
+}
+
+const GL_READY_TIMEOUT = 4000;
+const PAN_SENSITIVITY = 0.008;
+
+// Velocity smoothing: exponential moving average
+const VELOCITY_SMOOTHING = 0.3;
+const VELOCITY_SCALE_X = 0.00006;
+const VELOCITY_SCALE_Y = 0.00005;
+
+// Auto-rotate resume delay after user interaction
+const AUTO_ROTATE_RESUME_DELAY = 800;        // ms
+
+// Initial slight downward tilt (0.15 rad around X axis)
+// qFromAxisAngle(1, 0, 0, 0.15) pre-computed:
+const INITIAL_QX = 0.07494;
+const INITIAL_QW = 0.99719;
+
+// ─── Premium Fallback ───────────────────────────────────────────────────────
+
+const PremiumFallback: React.FC<{ tierKey: TierKey; size: number }> = ({ tierKey, size }) => {
+  const tier = TIER_PROFILES[tierKey];
+  return (
+    <View style={[styles.fallback, { width: size, height: size }]}>
+      <LinearGradient
+        colors={[tier.primaryColor + '30', tier.glowColor + '15', 'transparent']}
+        style={[styles.fallbackGlow, { width: size * 0.6, height: size * 0.6, borderRadius: size * 0.3 }]}
+      />
+      <View style={[styles.fallbackDiamond, {
+        width: size * 0.3,
+        height: size * 0.4,
+        borderColor: tier.primaryColor + '50',
+      }]} />
+      <Text style={[styles.fallbackLabel, { color: tier.primaryColor + '60' }]}>
+        Rendering optimized for your device
+      </Text>
+    </View>
+  );
+};
+
+// ─── Component ──────────────────────────────────────────────────────────────
+
+export const GemRenderer3D: React.FC<Props> = React.memo(({
+  tierKey,
+  shape = 'brilliant',
+  size = 220,
+  viewWidth,
+  viewHeight,
+  interactive = true,
+  onTap,
+  style,
+  gemScale = 1,
+}) => {
+  const [useFallback, setUseFallback] = useState(false);
+  const [glReady, setGlReady] = useState(false);
+  const [appActive, setAppActive] = useState(true);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastFrameRef = useRef(0);
+
+  const displayW = viewWidth ?? size;
+  const displayH = viewHeight ?? size;
+
+  // Persistent quaternion rotation state
+  const rotationRef = useRef<RotationState>({
+    qx: INITIAL_QX, qy: 0, qz: 0, qw: INITIAL_QW,
+    vx: 0, vy: 0, isDragging: false,
+    autoRotatePaused: false,
+    lastInteractionTime: 0,
+  });
+  const prevTranslation = useRef({ x: 0, y: 0 });
+  // Smoothed velocity accumulators
+  const smoothVx = useRef(0);
+  const smoothVy = useRef(0);
+
+  // ── AppState lifecycle (pause when backgrounded) ──
+  useEffect(() => {
+    const handler = (state: AppStateStatus) => {
+      setAppActive(state === 'active');
+    };
+    const sub = AppState.addEventListener('change', handler);
+    return () => sub.remove();
+  }, []);
+
+  // ── GL readiness timeout ──
+  useEffect(() => {
+    if (!useFallback && !glReady) {
+      timeoutRef.current = setTimeout(() => {
+        if (!glReady) setUseFallback(true);
+      }, GL_READY_TIMEOUT);
+    }
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, [useFallback, glReady]);
+
+  // ── Heartbeat monitor ──
+  useEffect(() => {
+    if (!glReady || useFallback) return;
+    const interval = setInterval(() => {
+      if (appActive && lastFrameRef.current > 0 && Date.now() - lastFrameRef.current > 3000) {
+        if (__DEV__) console.warn('[GemRenderer3D] GL stopped producing frames');
+        setUseFallback(true);
+      }
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [glReady, useFallback, appActive]);
+
+  const handleGlReady = useCallback(() => {
+    setGlReady(true);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+  }, []);
+
+  const handleGlError = useCallback(() => setUseFallback(true), []);
+
+  const handleFrame = useCallback(() => {
+    lastFrameRef.current = Date.now();
+  }, []);
+
+  // ── Gestures — quaternion-based 360° rotation with soft pitch clamp ──
+  const panGesture = Gesture.Pan()
+    .enabled(interactive)
+    .onBegin(() => {
+      const rs = rotationRef.current;
+      rs.isDragging = true;
+      rs.autoRotatePaused = true;
+      rs.vx = 0;
+      rs.vy = 0;
+      smoothVx.current = 0;
+      smoothVy.current = 0;
+      prevTranslation.current = { x: 0, y: 0 };
+    })
+    .onUpdate((e) => {
+      const dx = e.translationX - prevTranslation.current.x;
+      const dy = e.translationY - prevTranslation.current.y;
+      prevTranslation.current = { x: e.translationX, y: e.translationY };
+
+      const rs = rotationRef.current;
+
+      // Build incremental rotation quaternions from gesture delta
+      // Pure quaternion — no pitch limits, true 360° tumble
+      const qY = qFromAxisAngle(0, 1, 0, dx * PAN_SENSITIVITY);
+      const qX = qFromAxisAngle(1, 0, 0, dy * PAN_SENSITIVITY);
+
+      // Apply: current = qY * qX * current
+      let result = qMul(
+        qX.x, qX.y, qX.z, qX.w,
+        rs.qx, rs.qy, rs.qz, rs.qw,
+      );
+      result = qMul(
+        qY.x, qY.y, qY.z, qY.w,
+        result.x, result.y, result.z, result.w,
+      );
+
+      // Normalize to prevent drift
+      const norm = qNormalize(result.x, result.y, result.z, result.w);
+      rs.qx = norm.x;
+      rs.qy = norm.y;
+      rs.qz = norm.z;
+      rs.qw = norm.w;
+
+      // Smooth velocity capture via exponential moving average
+      const rawVy = e.velocityX * VELOCITY_SCALE_X;
+      const rawVx = e.velocityY * VELOCITY_SCALE_Y;
+      smoothVx.current = smoothVx.current * (1 - VELOCITY_SMOOTHING) + rawVx * VELOCITY_SMOOTHING;
+      smoothVy.current = smoothVy.current * (1 - VELOCITY_SMOOTHING) + rawVy * VELOCITY_SMOOTHING;
+    })
+    .onEnd(() => {
+      const rs = rotationRef.current;
+      rs.isDragging = false;
+      rs.lastInteractionTime = Date.now();
+
+      // Transfer smoothed velocity for inertia
+      rs.vx = smoothVx.current;
+      rs.vy = smoothVy.current;
+
+      // Cap velocity magnitude for sanity
+      const maxV = 0.04;
+      const vMag = Math.sqrt(rs.vx * rs.vx + rs.vy * rs.vy);
+      if (vMag > maxV) {
+        const scale = maxV / vMag;
+        rs.vx *= scale;
+        rs.vy *= scale;
+      }
+    });
+
+  const tapGesture = Gesture.Tap()
+    .enabled(!!onTap)
+    .onEnd(() => {
+      if (onTap) {
+        hapticSelection();
+        onTap();
+      }
+    });
+
+  const composed = interactive && onTap
+    ? Gesture.Exclusive(panGesture, tapGesture)
+    : interactive
+    ? panGesture
+    : onTap
+    ? tapGesture
+    : Gesture.Tap();
+
+  // Premium fallback
+  if (useFallback) {
+    return (
+      <View style={[{ width: displayW, height: displayH }, style]}>
+        <PremiumFallback tierKey={tierKey} size={Math.min(displayW, displayH)} />
+      </View>
+    );
+  }
+
+  // 3D Renderer (persistent, no key)
+  return (
+    <Gem3DErrorBoundary
+      tierKey={tierKey}
+      shape={shape}
+      size={Math.min(displayW, displayH)}
+      onTap={onTap}
+      interactive={interactive}
+    >
+      <GestureDetector gesture={composed}>
+        <View style={[styles.container, { width: displayW, height: displayH }, style]}>
+          <GemView
+            tierKey={tierKey}
+            shape={shape}
+            size={size}
+            viewWidth={viewWidth}
+            viewHeight={viewHeight}
+            rotationState={rotationRef.current}
+            gemScale={gemScale}
+            paused={!appActive}
+            onReady={handleGlReady}
+            onError={handleGlError}
+            onFrame={handleFrame}
+          />
+        </View>
+      </GestureDetector>
+    </Gem3DErrorBoundary>
+  );
+});
+
+const styles = StyleSheet.create({
+  container: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  fallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fallbackGlow: {
+    position: 'absolute',
+  },
+  fallbackDiamond: {
+    borderWidth: 1,
+    transform: [{ rotate: '45deg' }],
+  },
+  fallbackLabel: {
+    position: 'absolute',
+    bottom: 8,
+    fontSize: 9,
+    letterSpacing: 0.5,
+    textAlign: 'center',
+  },
+});

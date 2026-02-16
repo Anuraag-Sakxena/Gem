@@ -1,0 +1,15 @@
+export { GemRenderer3D } from './GemRenderer3D';
+export { GemView, gemDiagnostics } from './GemView';
+export type { RotationState } from './GemView';
+export { TierPreview } from './TierPreview';
+export { Gem3DErrorBoundary } from './Gem3DErrorBoundary';
+export { createGemGeometry, createBrilliantGeometry, createEmeraldGeometry, createMarquiseGeometry } from './geometries';
+export type { GemShapeKey } from './geometries';
+export { TIER_MATERIALS, safeMaterial } from './materials';
+export type { GemMaterialConfig } from './materials';
+export { NOIR_LIGHTS, PREVIEW_LIGHTS } from './lighting';
+export type { LightPreset } from './lighting';
+export { createArcCoreMaterial } from './ArcCoreShader';
+export { fitCameraToObject } from './fitCamera';
+export { getShapeProfile, SHAPE_PROFILES } from './shapeProfiles';
+export type { ShapeProfile } from './shapeProfiles';
