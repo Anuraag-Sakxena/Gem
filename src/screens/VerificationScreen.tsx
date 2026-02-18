@@ -1,9 +1,25 @@
 /**
- * VerificationScreen V2 — code verification + rarity index with tokens.
+ * VerificationScreen V3 — code verification + rarity index.
+ *
+ * Changes from V2:
+ *   - Keyboard dismiss on tap outside
+ *   - Return key submits verification
+ *   - Format hint always visible below input
+ *   - Removed theme prop drilling — hardcoded noir palette
  */
 
-import React, { useState, useCallback } from 'react';
-import { StyleSheet, Text, View, TextInput, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import React, { useState, useCallback, useRef } from 'react';
+import {
+  StyleSheet,
+  Text,
+  View,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  Keyboard,
+  Pressable,
+} from 'react-native';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/RootNavigator';
@@ -26,14 +42,15 @@ interface VerifyResult {
 }
 
 export const VerificationScreen: React.FC<Props> = ({ navigation }) => {
-  const theme = useGemStore((s) => s.getTheme());
   const tierKey = useGemStore((s) => s.currentTier);
   const tier = TIER_PROFILES[tierKey];
+  const inputRef = useRef<TextInput>(null);
   const [code, setCode] = useState('');
   const [result, setResult] = useState<VerifyResult | null>(null);
   const [error, setError] = useState('');
 
   const handleVerify = useCallback(() => {
+    Keyboard.dismiss();
     setResult(null);
     setError('');
 
@@ -54,113 +71,121 @@ export const VerificationScreen: React.FC<Props> = ({ navigation }) => {
 
   return (
     <ScreenBackground>
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <ScreenHeader title="Verify" onBack={() => navigation.goBack()} />
+      <Pressable style={{ flex: 1 }} onPress={Keyboard.dismiss}>
+        <KeyboardAvoidingView
+          style={styles.container}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <ScreenHeader title="Verify" onBack={() => navigation.goBack()} />
 
-        <ScrollView showsVerticalScrollIndicator={false}>
-          {/* Verify */}
-          <Animated.View entering={FadeInDown.delay(100).duration(450)}>
-            <GlassPanel style={styles.section}>
-              <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Verify a Gem</Text>
-              <Text style={[styles.sectionDesc, { color: theme.textMuted }]}>
-                Enter a gem code to verify authenticity
-              </Text>
-
-              <TextInput
-                style={[
-                  styles.input,
-                  {
-                    color: theme.textPrimary,
-                    borderColor: error ? palette.error : theme.cardBorder,
-                    backgroundColor: theme.surfaceColor,
-                  },
-                ]}
-                placeholder="RIN-07X"
-                placeholderTextColor={theme.textMuted}
-                value={code}
-                onChangeText={setCode}
-                autoCapitalize="characters"
-                autoCorrect={false}
-              />
-
-              {error !== '' && <Text style={styles.errorText}>{error}</Text>}
-
-              <PremiumButton
-                title="VERIFY"
-                onPress={handleVerify}
-                variant="accent"
-                size="medium"
-                style={{ marginTop: spacing.md }}
-                disabled={code.trim().length === 0}
-              />
-
-              {result && (
-                <Animated.View entering={FadeIn.duration(350)} style={styles.resultCard}>
-                  <ResultRow label="Authentic" theme={theme}>
-                    <Text style={{ ...typography.titleSmall, color: result.authentic ? palette.success : palette.error }}>
-                      {result.authentic ? 'Yes' : 'No'}
-                    </Text>
-                  </ResultRow>
-                  <ResultRow label="Tier" theme={theme}>
-                    <Text style={[styles.resultValue, { color: theme.textPrimary }]}>{result.tier}</Text>
-                  </ResultRow>
-                  <ResultRow label="Supply" theme={theme}>
-                    <Text style={[styles.resultValue, { color: theme.textPrimary }]}>{result.supply}</Text>
-                  </ResultRow>
-                  <ResultRow label="Serial" theme={theme}>
-                    <Text style={[styles.serialValue, { color: theme.textSecondary }]}>{result.serial}</Text>
-                  </ResultRow>
-                </Animated.View>
-              )}
-            </GlassPanel>
-          </Animated.View>
-
-          {/* Rarity Index */}
-          <Animated.View entering={FadeInDown.delay(250).duration(450)}>
-            <GlassPanel style={styles.section}>
-              <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Rarity Index</Text>
-              <Text style={[styles.sectionDesc, { color: theme.textMuted }]}>
-                Your current gem's scarcity metrics
-              </Text>
-
-              <View style={styles.rarityGrid}>
-                <View style={styles.rarityItem}>
-                  <Text style={[styles.rarityValue, { color: theme.accent }]}>{tier.supply}</Text>
-                  <Text style={[styles.rarityLabel, { color: theme.textMuted }]}>Global Supply</Text>
-                </View>
-                <View style={styles.rarityItem}>
-                  <Text style={[styles.rarityValue, { color: theme.accent }]}>
-                    {tier.supplyCount ? Math.max(1, tier.supplyCount - 2) : '\u221E'}
-                  </Text>
-                  <Text style={[styles.rarityLabel, { color: theme.textMuted }]}>Remaining</Text>
-                </View>
-              </View>
-
-              {tier.supplyCount ? (
-                <Text style={[styles.rarityNote, { color: theme.textMuted }]}>
-                  Unlocked by previous tier sellout. Limited edition.
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Verify */}
+            <Animated.View entering={FadeInDown.delay(100).duration(450)}>
+              <GlassPanel style={styles.section}>
+                <Text style={styles.sectionTitle}>Verify a Gem</Text>
+                <Text style={styles.sectionDesc}>
+                  Enter a gem code to verify authenticity
                 </Text>
-              ) : null}
-            </GlassPanel>
-          </Animated.View>
 
-          <View style={{ height: spacing['4xl'] }} />
-        </ScrollView>
-      </KeyboardAvoidingView>
+                <TextInput
+                  ref={inputRef}
+                  style={[
+                    styles.input,
+                    error ? styles.inputError : null,
+                  ]}
+                  placeholder="RIN-07X"
+                  placeholderTextColor={palette.warmGray600}
+                  value={code}
+                  onChangeText={(text) => { setCode(text); setError(''); }}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                  onSubmitEditing={handleVerify}
+                  accessible
+                  accessibilityLabel="Gem verification code input"
+                  accessibilityHint="Enter a gem code in RIN-XXXX format"
+                />
+
+                <Text style={[styles.formatHint, error ? styles.formatHintError : null]}>
+                  {error || 'Format: RIN-XXXX (e.g. RIN-07X)'}
+                </Text>
+
+                <PremiumButton
+                  title="VERIFY"
+                  onPress={handleVerify}
+                  variant="accent"
+                  size="medium"
+                  style={{ marginTop: spacing.md }}
+                  disabled={code.trim().length === 0}
+                />
+
+                {result && (
+                  <Animated.View entering={FadeIn.duration(350)} style={styles.resultCard}>
+                    <ResultRow label="Authentic">
+                      <Text style={[styles.resultValue, { color: result.authentic ? palette.success : palette.error }]}>
+                        {result.authentic ? 'Yes' : 'No'}
+                      </Text>
+                    </ResultRow>
+                    <ResultRow label="Tier">
+                      <Text style={styles.resultValue}>{result.tier}</Text>
+                    </ResultRow>
+                    <ResultRow label="Supply">
+                      <Text style={styles.resultValue}>{result.supply}</Text>
+                    </ResultRow>
+                    <ResultRow label="Serial">
+                      <Text style={styles.serialValue}>{result.serial}</Text>
+                    </ResultRow>
+                  </Animated.View>
+                )}
+              </GlassPanel>
+            </Animated.View>
+
+            {/* Rarity Index */}
+            <Animated.View entering={FadeInDown.delay(250).duration(450)}>
+              <GlassPanel style={styles.section}>
+                <Text style={styles.sectionTitle}>Rarity Index</Text>
+                <Text style={styles.sectionDesc}>
+                  Your current gem's scarcity metrics
+                </Text>
+
+                <View style={styles.rarityGrid}>
+                  <View style={styles.rarityItem}>
+                    <Text style={styles.rarityValue}>{tier.supply}</Text>
+                    <Text style={styles.rarityLabel}>Global Supply</Text>
+                  </View>
+                  <View style={styles.rarityItem}>
+                    <Text style={styles.rarityValue}>
+                      {tier.supplyCount ? Math.max(1, tier.supplyCount - 2) : '\u221E'}
+                    </Text>
+                    <Text style={styles.rarityLabel}>Remaining</Text>
+                  </View>
+                </View>
+
+                {tier.supplyCount ? (
+                  <Text style={styles.rarityNote}>
+                    Unlocked by previous tier sellout. Limited edition.
+                  </Text>
+                ) : null}
+              </GlassPanel>
+            </Animated.View>
+
+            <View style={{ height: spacing['4xl'] }} />
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Pressable>
     </ScreenBackground>
   );
 };
 
 const ResultRow: React.FC<{
   label: string;
-  theme: ReturnType<typeof useGemStore.getState>['getTheme'] extends () => infer R ? R : never;
   children: React.ReactNode;
-}> = ({ label, theme, children }) => (
+}> = ({ label, children }) => (
   <View style={styles.resultRow}>
-    <Text style={[styles.resultLabel, { color: theme.textMuted }]}>{label}</Text>
+    <Text style={styles.resultLabel}>{label}</Text>
     {children}
   </View>
 );
@@ -172,8 +197,16 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
   },
   section: { marginBottom: spacing.lg },
-  sectionTitle: { ...typography.titleLarge, marginBottom: spacing.xs },
-  sectionDesc: { ...typography.caption, marginBottom: spacing.lg },
+  sectionTitle: {
+    ...typography.titleLarge,
+    color: '#F2F0ED',
+    marginBottom: spacing.xs,
+  },
+  sectionDesc: {
+    ...typography.caption,
+    color: palette.warmGray600,
+    marginBottom: spacing.lg,
+  },
   input: {
     borderWidth: 0.5,
     borderRadius: radii.md,
@@ -181,20 +214,56 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
     ...typography.mono,
     fontSize: 15,
+    color: '#F2F0ED',
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
   },
-  errorText: { ...typography.caption, color: palette.error, marginTop: spacing.sm },
+  inputError: {
+    borderColor: palette.error,
+  },
+  formatHint: {
+    ...typography.caption,
+    color: palette.warmGray600,
+    marginTop: spacing.sm,
+    fontSize: 10,
+  },
+  formatHintError: {
+    color: palette.error,
+  },
   resultCard: { marginTop: spacing.lg, gap: spacing.sm },
   resultRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  resultLabel: { ...typography.bodySmall },
-  resultValue: { ...typography.titleSmall },
-  serialValue: { ...typography.mono },
+  resultLabel: {
+    ...typography.bodySmall,
+    color: palette.warmGray600,
+  },
+  resultValue: {
+    ...typography.titleSmall,
+    color: '#F2F0ED',
+  },
+  serialValue: {
+    ...typography.mono,
+    color: palette.warmGray400,
+  },
   rarityGrid: { flexDirection: 'row', gap: spacing.lg },
   rarityItem: { flex: 1, alignItems: 'center', paddingVertical: spacing.md },
-  rarityValue: { ...typography.headlineLarge, marginBottom: spacing.xs },
-  rarityLabel: { ...typography.caption },
-  rarityNote: { ...typography.caption, textAlign: 'center', marginTop: spacing.md, fontStyle: 'italic' },
+  rarityValue: {
+    ...typography.headlineLarge,
+    color: palette.gold400,
+    marginBottom: spacing.xs,
+  },
+  rarityLabel: {
+    ...typography.caption,
+    color: palette.warmGray600,
+  },
+  rarityNote: {
+    ...typography.caption,
+    color: palette.warmGray600,
+    textAlign: 'center',
+    marginTop: spacing.md,
+    fontStyle: 'italic',
+  },
 });

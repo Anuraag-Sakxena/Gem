@@ -1,15 +1,15 @@
 /**
- * HomeScreen V8 — Full-screen gem with UI overlay.
+ * HomeScreen V9 — Full-screen gem with accessible UI overlay.
  *
  * Each screen owns its own GemRenderer3D instance.
- * The shared-renderer approach (V7) was reverted because native-stack
- * uses UINavigationController (iOS) which manages its own native view
- * hierarchy — React z-index does NOT pierce through native screen containers.
+ * The shared-renderer approach was reverted because native-stack
+ * uses UINavigationController (iOS) — React z-index does NOT
+ * pierce through native screen containers.
  *
  * Layout (back to front):
- *   1. GemRenderer3D — full-screen 3D gem, reads tier/shape/theme from store
+ *   1. GemRenderer3D — full-screen 3D gem, reads tier/shape from store
  *   2. UpgradeEffect — particle burst on tier change
- *   3. UI Layer — header (tier label, serial, hamburger), bottom pill button
+ *   3. UI Layer — header (tier label + shape, serial, hamburger), bottom pill
  *   4. FullscreenMenu + GemDetailsSheet — modal overlays
  */
 
@@ -32,6 +32,24 @@ import { hapticLight } from '../utils/haptics';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
+const SHAPE_DISPLAY_NAMES: Record<string, string> = {
+  brilliant: 'Brilliant Cut',
+  princess: 'Princess Cut',
+  emerald: 'Emerald Cut',
+  cushion: 'Cushion Cut',
+  pear: 'Pear Drop',
+  marquise: 'Marquise',
+  oval: 'Oval',
+  heart: 'Heart',
+  trillion: 'Trillion',
+  hexagon: 'Hexagon',
+  prism: 'Prism',
+  shard: 'Shard',
+  kite: 'Kite',
+  star: 'Star',
+  cube: 'Cube',
+};
+
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
 export const HomeScreen: React.FC<Props> = ({ navigation }) => {
@@ -39,9 +57,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const tierKey = useGemStore((s) => s.currentTier);
   const gemShape = useGemStore((s) => s.gemShape);
   const serial = useGemStore((s) => s.serial);
+  const backgroundMode = useGemStore((s) => s.backgroundMode);
   const toggleMenu = useGemStore((s) => s.toggleMenu);
   const toggleGemDetails = useGemStore((s) => s.toggleGemDetails);
   const tier = TIER_PROFILES[tierKey];
+  const isLight = backgroundMode === 'light';
 
   // Upgrade ceremony
   const prevTierRef = useRef(tierKey);
@@ -68,10 +88,12 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     toggleGemDetails();
   }, [toggleGemDetails]);
 
+  const shapeName = SHAPE_DISPLAY_NAMES[gemShape] ?? gemShape;
+
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, isLight && styles.rootLight]}>
       {/* Full-screen 3D gem — ALWAYS renders, reads from store */}
-      <View style={styles.gemLayer}>
+      <View style={styles.gemLayer} accessible={false}>
         <GemRenderer3D
           tierKey={tierKey}
           shape={gemShape}
@@ -79,6 +101,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           viewWidth={SCREEN_W}
           viewHeight={SCREEN_H}
           interactive={true}
+          backgroundMode={backgroundMode}
         />
       </View>
 
@@ -95,29 +118,45 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         <Animated.View
           entering={FadeInDown.delay(100).duration(500)}
           style={[styles.header, { paddingTop: insets.top + spacing.sm }]}
+          pointerEvents="box-none"
         >
-          <View style={styles.headerRow}>
+          <View style={styles.headerRow} pointerEvents="box-none">
             <View style={styles.flex1} />
-            <View style={styles.headerCenter}>
-              <Text style={styles.tierLabel}>
+            <View
+              style={styles.headerCenter}
+              accessible
+              accessibilityLabel={`${tier.name} tier, ${shapeName}, serial ${maskSerial(serial)}`}
+              accessibilityRole="header"
+            >
+              <Text style={[styles.tierLabel, isLight && styles.tierLabelLight]}>
                 {tier.name.toUpperCase()}
               </Text>
-              <Text style={styles.serialLabel}>
+              <Text style={[styles.shapeLabel, isLight && styles.shapeLabelLight]}>
+                {shapeName}
+              </Text>
+              <Text style={[styles.serialLabel, isLight && styles.serialLabelLight]}>
                 {maskSerial(serial)}
               </Text>
             </View>
             <View style={styles.flex1End}>
-              <Pressable onPress={handleHamburger} hitSlop={hitSlop.lg} style={styles.hamburger}>
-                <View style={styles.hamburgerLine} />
-                <View style={styles.hamburgerLine} />
-                <View style={styles.hamburgerLine} />
+              <Pressable
+                onPress={handleHamburger}
+                hitSlop={hitSlop.lg}
+                style={styles.hamburger}
+                accessible
+                accessibilityLabel="Open menu"
+                accessibilityRole="button"
+              >
+                <View style={[styles.hamburgerLine, isLight && styles.hamburgerLineLight]} />
+                <View style={[styles.hamburgerLine, isLight && styles.hamburgerLineLight]} />
+                <View style={[styles.hamburgerLine, isLight && styles.hamburgerLineLight]} />
               </Pressable>
             </View>
           </View>
         </Animated.View>
 
-        {/* Spacer pushes button to bottom */}
-        <View style={styles.spacer} />
+        {/* Spacer pushes button to bottom — pointerEvents none so touches pass to gem */}
+        <View style={styles.spacer} pointerEvents="none" />
 
         {/* Gem Details pill button */}
         <Animated.View
@@ -128,10 +167,14 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             onPress={handleGemDetails}
             style={({ pressed }) => [
               styles.detailsButton,
+              isLight && styles.detailsButtonLight,
               pressed && styles.detailsButtonPressed,
             ]}
+            accessible
+            accessibilityLabel="View gem details"
+            accessibilityRole="button"
           >
-            <Text style={styles.detailsButtonText}>Gem Details</Text>
+            <Text style={[styles.detailsButtonText, isLight && styles.detailsButtonTextLight]}>Gem Details</Text>
           </Pressable>
         </Animated.View>
       </View>
@@ -147,6 +190,9 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: '#0A0A09',
+  },
+  rootLight: {
+    backgroundColor: '#E8E4DE',
   },
   gemLayer: {
     ...StyleSheet.absoluteFillObject,
@@ -176,11 +222,26 @@ const styles = StyleSheet.create({
     letterSpacing: 4,
     fontSize: 11,
   },
+  tierLabelLight: {
+    color: 'rgba(0,0,0,0.45)',
+  },
+  shapeLabel: {
+    ...typography.caption,
+    color: 'rgba(255,255,255,0.35)',
+    letterSpacing: 1.5,
+    fontSize: 9,
+  },
+  shapeLabelLight: {
+    color: 'rgba(0,0,0,0.3)',
+  },
   serialLabel: {
     ...typography.mono,
     color: 'rgba(255,255,255,0.3)',
     fontSize: 9,
     letterSpacing: 2,
+  },
+  serialLabelLight: {
+    color: 'rgba(0,0,0,0.25)',
   },
   hamburger: {
     width: 24,
@@ -194,6 +255,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.6)',
     borderRadius: 1,
   },
+  hamburgerLineLight: {
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
   spacer: { flex: 1 },
   bottomArea: {
     alignItems: 'center',
@@ -206,6 +270,10 @@ const styles = StyleSheet.create({
     borderWidth: 0.5,
     borderColor: 'rgba(255,255,255,0.15)',
   },
+  detailsButtonLight: {
+    backgroundColor: 'rgba(0,0,0,0.08)',
+    borderColor: 'rgba(0,0,0,0.12)',
+  },
   detailsButtonPressed: {
     transform: [{ scale: 0.96 }],
     opacity: 0.8,
@@ -215,5 +283,8 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.8)',
     letterSpacing: 1,
     fontSize: 14,
+  },
+  detailsButtonTextLight: {
+    color: 'rgba(0,0,0,0.6)',
   },
 });

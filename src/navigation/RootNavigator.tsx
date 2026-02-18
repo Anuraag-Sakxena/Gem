@@ -1,13 +1,16 @@
 /**
- * RootNavigator — native stack navigator with screen definitions.
+ * RootNavigator V2 — native stack with onboarding gate.
  *
- * All screens have transparent backgrounds — the shared 3D renderer
- * in AppShell shows through. Screens that need opaque backgrounds
- * render their own background views.
+ * First launch: shows Splash → user taps CONTINUE → marks onboarded → Home.
+ * Subsequent launches: skips Splash, goes directly to Home.
+ *
+ * All screens have transparent backgrounds — screens that need opaque
+ * backgrounds render their own background views.
  */
 
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { hasOnboarded } from '../utils/persistence';
 import { SplashScreen } from '../screens/SplashScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { TierLadderScreen } from '../screens/TierLadderScreen';
@@ -30,10 +33,12 @@ export type RootStackParamList = {
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
+const initialRoute = hasOnboarded() ? 'Home' : 'Splash';
+
 export const RootNavigator: React.FC = () => {
   return (
     <Stack.Navigator
-      initialRouteName="Splash"
+      initialRouteName={initialRoute}
       screenOptions={{
         headerShown: false,
         animation: 'fade',
@@ -51,7 +56,7 @@ export const RootNavigator: React.FC = () => {
       <Stack.Screen
         name="Reveal"
         component={RevealScreen}
-        options={{ animation: 'fade' }}
+        options={{ animation: 'fade', gestureEnabled: false }}
       />
       <Stack.Screen
         name="Profile"

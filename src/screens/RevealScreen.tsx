@@ -1,22 +1,21 @@
 /**
- * RevealScreen V6 — Owns its own GemRenderer3D, hidden until materialize.
+ * RevealScreen V7 — Owns its own GemRenderer3D, hidden until materialize.
  *
  * Architecture:
  *   - GemRenderer3D renders at full-screen behind a dark overlay
  *   - 2D variant animations play on top of the overlay
- *   - On "materialize": dark overlay fades out → gem becomes visible
+ *   - On "materialize": dark overlay fades out -> gem becomes visible
  *   - On "flash" / "complete": gem becomes interactive
  *
  * Each screen owns its own GemRenderer3D. No shared renderer.
  *
- * Variants:
- *   A "Assembly"      — atom -> ring -> shards converge -> gem
- *   B "Carved"        — stone -> laser sweep -> crack -> gem
- *   C "Crystallize"   — droplet -> ripples -> crystal rays -> gem
- *   D "Particle Forge" — particles scatter -> swirl -> snap -> gem
+ * Changes from V6:
+ *   - Magic numbers extracted to named constants
+ *   - Double-tap prevention on BEGIN REVEAL
+ *   - Phase-driven status text during animation
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { StyleSheet, Text, View, Dimensions, Pressable } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -45,6 +44,13 @@ import { VariantParticleForge } from './reveal/VariantParticleForge';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
+// ─── Named constants ─────────────────────────────────────────────────────
+const MATERIALIZE_FADE_MS = 800;
+const FLASH_PEAK_MS = 100;
+const FLASH_DECAY_MS = 450;
+const FLASH_COMPLETE_DELAY_MS = 600; // must exceed FLASH_PEAK_MS + FLASH_DECAY_MS (550ms)
+const FLASH_PEAK_OPACITY = 0.65;
+
 type Props = NativeStackScreenProps<RootStackParamList, 'Reveal'>;
 type RevealPhase = 'idle' | 'animating' | 'materializing' | 'complete';
 type VariantType = 'assembly' | 'carved' | 'crystallize' | 'particleForge';
@@ -57,6 +63,11 @@ const VARIANT_LABELS: Record<VariantType, string> = {
   particleForge: 'Particle Forge',
 };
 
+const PHASE_STATUS: Partial<Record<RevealPhase, string>> = {
+  animating: 'Forging...',
+  materializing: 'Materializing...',
+};
+
 function pickRandomVariant(): VariantType {
   return VARIANTS[Math.floor(Math.random() * VARIANTS.length)];
 }
@@ -65,6 +76,7 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const tierKey = useGemStore((s) => s.currentTier);
   const gemShape = useGemStore((s) => s.gemShape);
+  const backgroundMode = useGemStore((s) => s.backgroundMode);
   const markRevealed = useGemStore((s) => s.markRevealed);
   const tier = TIER_PROFILES[tierKey];
 
@@ -84,29 +96,31 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleMaterialize = useCallback(() => {
     setPhase('materializing');
-    // Fade out the dark background to reveal the GemRenderer3D underneath
-    bgOpacity.value = withTiming(0, { duration: 800, easing: easing.decelerate });
+    bgOpacity.value = withTiming(0, {
+      duration: MATERIALIZE_FADE_MS,
+      easing: easing.decelerate,
+    });
   }, [bgOpacity]);
 
   const handleFlash = useCallback(() => {
     flashOpacity.value = withSequence(
-      withTiming(0.65, { duration: 100 }),
-      withTiming(0, { duration: 450, easing: easing.decelerate }),
+      withTiming(FLASH_PEAK_OPACITY, { duration: FLASH_PEAK_MS }),
+      withTiming(0, { duration: FLASH_DECAY_MS, easing: easing.decelerate }),
     );
     hapticSuccess();
-    // Wait for flash animation to fully complete (100+450=550ms) before transitioning
     setTimeout(() => {
       setPhase('complete');
       setVariantActive(false);
       setGemInteractive(true);
       markRevealed();
-    }, 600);
+    }, FLASH_COMPLETE_DELAY_MS);
   }, [markRevealed, flashOpacity]);
 
   const startReveal = useCallback(() => {
+    if (phase !== 'idle') return; // prevent double-tap
     setPhase('animating');
     setVariantActive(true);
-  }, []);
+  }, [phase]);
 
   const resetReveal = useCallback(() => {
     setPhase('idle');
@@ -123,8 +137,7 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
     setDevVariant((prev) => {
       const curr = prev ?? variant;
       const idx = VARIANTS.indexOf(curr);
-      const next = VARIANTS[(idx + 1) % VARIANTS.length];
-      return next;
+      return VARIANTS[(idx + 1) % VARIANTS.length];
     });
   }, [phase, variant]);
 
@@ -138,6 +151,8 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
     opacity: flashOpacity.value,
   }));
 
+  const statusText = PHASE_STATUS[phase];
+
   return (
     <View style={styles.root}>
       {/* Full-screen gem — renders behind overlay, revealed on materialize */}
@@ -149,6 +164,7 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
           viewWidth={SCREEN_W}
           viewHeight={SCREEN_H}
           interactive={gemInteractive}
+          backgroundMode={backgroundMode}
         />
       </View>
 
@@ -208,6 +224,13 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
           />
         )}
 
+        {/* Phase status text */}
+        {statusText && (
+          <Animated.Text entering={FadeIn.duration(300)} style={styles.statusText}>
+            {statusText}
+          </Animated.Text>
+        )}
+
         {/* Idle prompt */}
         {phase === 'idle' && (
           <Animated.View entering={FadeIn.duration(500)} style={styles.idleContainer}>
@@ -245,7 +268,12 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
             size="medium"
           />
           <View style={{ height: spacing.sm }} />
-          <Pressable onPress={resetReveal}>
+          <Pressable
+            onPress={resetReveal}
+            accessible
+            accessibilityLabel="Replay the reveal animation"
+            accessibilityRole="button"
+          >
             <Text style={styles.replayText}>Replay Reveal</Text>
           </Pressable>
         </Animated.View>
@@ -278,6 +306,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 5,
+  },
+  statusText: {
+    ...typography.caption,
+    color: 'rgba(255,255,255,0.4)',
+    letterSpacing: 2,
+    position: 'absolute',
+    bottom: 80,
   },
   idleContainer: {
     alignItems: 'center',

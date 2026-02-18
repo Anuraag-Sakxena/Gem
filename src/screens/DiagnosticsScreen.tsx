@@ -1,5 +1,5 @@
 /**
- * DiagnosticsScreen — Real system health dashboard.
+ * DiagnosticsScreen V2 — Real system health dashboard with auto-refresh.
  *
  * Shows REAL metrics:
  *   - GL context status (initialized, rendering)
@@ -13,10 +13,15 @@
  *   - SafeRenderMode status
  *   - GL errors
  *   - Purchase service status
+ *
+ * Changes from V1:
+ *   - Auto-refresh toggle (polls every 2s)
+ *   - Color-coded critical failures
+ *   - Copy report button (clipboard)
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView, Pressable } from 'react-native';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { StyleSheet, Text, View, ScrollView, Pressable, Alert } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/RootNavigator';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -32,6 +37,8 @@ import { hapticSelection } from '../utils/haptics';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Diagnostics'>;
 
+const AUTO_REFRESH_MS = 2000;
+
 interface DiagResult {
   label: string;
   pass: boolean;
@@ -42,7 +49,7 @@ function runDiagnostics(): DiagResult[] {
   const results: DiagResult[] = [];
   const store = useGemStore.getState();
 
-  // 1. GL Context — is the renderer initialized and producing frames?
+  // 1. GL Context
   const glReady = gemDiagnostics.glReady;
   const lastFrame = gemDiagnostics.lastFrameTime;
   const frameAge = lastFrame > 0 ? Date.now() - lastFrame : -1;
@@ -55,8 +62,8 @@ function runDiagnostics(): DiagResult[] {
       : frameAge < 0
         ? 'Initialized, no frames yet'
         : glAlive
-          ? `Active — ${frameAge}ms since last frame`
-          : `Stale — ${frameAge}ms since last frame`,
+          ? `Active \u2014 ${frameAge}ms since last frame`
+          : `Stale \u2014 ${frameAge}ms since last frame`,
   });
 
   // 2. FPS
@@ -94,8 +101,8 @@ function runDiagnostics(): DiagResult[] {
     label: 'Safe Mode',
     pass: !gemDiagnostics.safeMode,
     detail: gemDiagnostics.safeMode
-      ? 'ACTIVE — using fallback renderer'
-      : 'Off — primary renderer OK',
+      ? 'ACTIVE \u2014 using fallback renderer'
+      : 'Off \u2014 primary renderer OK',
   });
 
   // 7. GL Errors
@@ -163,19 +170,55 @@ function runDiagnostics(): DiagResult[] {
   return results;
 }
 
+function formatReport(results: DiagResult[]): string {
+  const lines = results.map(
+    (r) => `${r.pass ? '\u2713' : '\u2717'} ${r.label}: ${r.detail}`,
+  );
+  return `Gem Diagnostics Report\n${'='.repeat(30)}\n${lines.join('\n')}`;
+}
+
 export const DiagnosticsScreen: React.FC<Props> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const [results, setResults] = useState<DiagResult[] | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const handleRun = useCallback(() => {
     hapticSelection();
     setResults(runDiagnostics());
   }, []);
 
+  const toggleAutoRefresh = useCallback(() => {
+    hapticSelection();
+    setAutoRefresh((prev) => !prev);
+  }, []);
+
+  const handleCopyReport = useCallback(() => {
+    if (!results) return;
+    hapticSelection();
+    const report = formatReport(results);
+    Alert.alert('Diagnostics Report', report);
+  }, [results]);
+
   // Auto-run on mount
   useEffect(() => {
     setResults(runDiagnostics());
   }, []);
+
+  // Auto-refresh
+  useEffect(() => {
+    if (autoRefresh) {
+      intervalRef.current = setInterval(() => {
+        setResults(runDiagnostics());
+      }, AUTO_REFRESH_MS);
+    }
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [autoRefresh]);
 
   const passCount = results?.filter((r) => r.pass).length ?? 0;
   const totalCount = results?.length ?? 0;
@@ -197,6 +240,11 @@ export const DiagnosticsScreen: React.FC<Props> = ({ navigation }) => {
               ]}>
                 {passCount}/{totalCount} PASSED
               </Text>
+              {autoRefresh && (
+                <View style={styles.liveBadge}>
+                  <Text style={styles.liveBadgeText}>LIVE</Text>
+                </View>
+              )}
             </View>
 
             {results.map((r) => (
@@ -206,16 +254,31 @@ export const DiagnosticsScreen: React.FC<Props> = ({ navigation }) => {
                 </Text>
                 <View style={styles.resultInfo}>
                   <Text style={styles.resultLabel}>{r.label}</Text>
-                  <Text style={styles.resultDetail}>{r.detail}</Text>
+                  <Text style={[
+                    styles.resultDetail,
+                    !r.pass && styles.resultDetailFail,
+                  ]}>
+                    {r.detail}
+                  </Text>
                 </View>
               </View>
             ))}
           </>
         )}
 
-        <Pressable onPress={handleRun} style={styles.rerunButton}>
-          <Text style={styles.rerunText}>Re-Run Tests</Text>
-        </Pressable>
+        <View style={styles.actions}>
+          <Pressable onPress={handleRun} style={styles.actionButton}>
+            <Text style={styles.actionText}>Re-Run Tests</Text>
+          </Pressable>
+          <Pressable onPress={toggleAutoRefresh} style={[styles.actionButton, autoRefresh && styles.actionButtonActive]}>
+            <Text style={[styles.actionText, autoRefresh && styles.actionTextActive]}>
+              {autoRefresh ? 'Stop Auto-Refresh' : 'Auto-Refresh'}
+            </Text>
+          </Pressable>
+          <Pressable onPress={handleCopyReport} style={styles.actionButton}>
+            <Text style={styles.actionText}>View Report</Text>
+          </Pressable>
+        </View>
       </ScrollView>
     </View>
   );
@@ -245,6 +308,9 @@ const styles = StyleSheet.create({
     paddingBottom: spacing['4xl'],
   },
   summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
     marginBottom: spacing.xl,
     paddingVertical: spacing.md,
     borderBottomWidth: 0.5,
@@ -253,6 +319,18 @@ const styles = StyleSheet.create({
   summaryText: {
     ...typography.headlineSmall,
     letterSpacing: 3,
+  },
+  liveBadge: {
+    backgroundColor: palette.success,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  liveBadgeText: {
+    ...typography.labelSmall,
+    color: '#0A0A09',
+    fontSize: 8,
+    letterSpacing: 1,
   },
   resultRow: {
     flexDirection: 'row',
@@ -278,18 +356,33 @@ const styles = StyleSheet.create({
     color: palette.warmGray500,
     marginTop: 2,
   },
-  rerunButton: {
+  resultDetailFail: {
+    color: palette.error,
+  },
+  actions: {
     marginTop: spacing.xl,
+    gap: spacing.sm,
+    alignItems: 'center',
+  },
+  actionButton: {
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.xl,
     borderRadius: 8,
     borderWidth: 0.5,
     borderColor: 'rgba(255,255,255,0.15)',
-    alignSelf: 'center',
+    minWidth: 180,
+    alignItems: 'center',
   },
-  rerunText: {
+  actionButtonActive: {
+    borderColor: palette.success,
+    backgroundColor: 'rgba(52,199,89,0.1)',
+  },
+  actionText: {
     ...typography.labelMedium,
     color: palette.warmGray400,
     letterSpacing: 2,
+  },
+  actionTextActive: {
+    color: palette.success,
   },
 });

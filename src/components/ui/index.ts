@@ -9,3 +9,4 @@ export { ScreenHeader } from './ScreenHeader';
 export { UpgradeEffect } from './UpgradeEffect';
 export { FullscreenMenu } from './FullscreenMenu';
 export { GemDetailsSheet } from './GemDetailsSheet';
+export { AppErrorBoundary } from './AppErrorBoundary';

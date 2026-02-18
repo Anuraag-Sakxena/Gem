@@ -1,29 +1,27 @@
 /**
- * GemView V9 — Premium Dark Glass.
+ * GemView V15 — Light/Dark Background Modes + Scene Re-Lighting Animation.
  *
- * Design philosophy: Think Apple product photography.
- * The gem is the ONLY bright thing. Everything else is void.
- * No starfield. No dust particles. No overlapping glow layers.
- * Just clean material + clean lighting + clean reflections.
+ * V14→V15 changes:
+ *   - ADDED:   backgroundMode prop ('light' | 'dark') with smooth animated transition
+ *   - ADDED:   Scene re-lighting system — when switching modes, the ENTIRE studio
+ *              re-lights: background, exposure, ambient, hemisphere, fill, contact shadow
+ *              all animate together on a single timeline for a premium "cinematic" feel
+ *   - ADDED:   Light mode scene values: brighter exposure, warm pearl ambient, softer
+ *              vignette, reduced contact shadow for pearl backgrounds
+ *   - CHANGED: Background quad now takes mode parameter for auto-contrast
+ *   - KEPT:    Everything else — full lighting rig, PMREM, material lerping, rotation
  *
- * Visual layers (back to front):
- *   1. Background: near-black void (#050505)
- *   2. Ground light pool: subtle tier-colored circle beneath gem
- *   3. Contact shadow: small dark ellipse
- *   4. Gem mesh: MeshPhysicalMaterial + envMap + transmission
- *   5. Soft aura: single fresnel glow sphere
- *   6. Arc core: smooth pulsing inner light (no hex grid, no rings)
- *   7. 2 orbiting sweep lights (moving specular highlights)
+ * The transition approach:
+ *   When the user toggles Light <-> Dark, we DON'T just swap colors. Instead,
+ *   we smoothly animate EVERY scene parameter in the rAF loop (exposure, ambient
+ *   intensity/color, hemisphere sky/ground colors, fill intensity, contact shadow
+ *   opacity, background quad gradient). This creates the feel of the whole studio
+ *   being re-lit — like a photographer switching from a dark void backdrop to a
+ *   pearl sweep. The lerp speed is intentionally slower than material changes
+ *   (0.035 vs 0.06) so it feels deliberate and cinematic.
  *
- * V8→V9 changes:
- *   - Removed starfield (800 points) + dust (120 points) — too busy
- *   - Removed mid glow + outer haze + bloom (3 overlapping layers → 1 clean aura)
- *   - Removed hex grid + energy rings from arc core (noisy on mobile)
- *   - Removed pitch spring (true 360° rotation, no limits)
- *   - Simplified env map (fewer objects = cleaner reflections)
- *   - Added ground light pool (gem casts light onto dark surface)
- *   - Reduced sweep lights from 3 to 2
- *   - Fixed material safety (opacity=1 when transmission active)
+ * Philosophy: Studio product photography. Premium, buttery, Apple-level transitions.
+ * No flickers, no sudden jumps, no frame drops.
  */
 
 import React, { useRef, useEffect, useCallback } from 'react';
@@ -33,11 +31,14 @@ import type { ExpoWebGLRenderingContext } from 'expo-gl';
 import * as THREE from 'three';
 import { createGemGeometry, GemShapeKey } from './geometries';
 import { TIER_MATERIALS, safeMaterial } from './materials';
-import { NOIR_LIGHTS } from './lighting';
-import { createArcCoreMaterial } from './ArcCoreShader';
+import { STUDIO_LIGHTS } from './lighting';
+import { createStudioEnvironment } from './studioEnv';
+import { createContactShadow } from './shadowCatcher';
+import { createBackgroundQuad, BackgroundQuad } from './backgroundQuad';
 import { fitCameraToObject } from './fitCamera';
 import { getShapeProfile } from './shapeProfiles';
 import { TierKey } from '../engine/tierProfiles';
+import type { BackgroundMode } from '../store/useGemStore';
 
 // ─── Pre-allocated temp objects (zero GC in render loop) ────────────────────
 
@@ -49,162 +50,62 @@ const _axisY = new THREE.Vector3(0, 1, 0);
 // ─── Quaternion-based Rotation State ────────────────────────────────────────
 
 export interface RotationState {
-  /** Quaternion components — gimbal-lock-free orientation */
-  qx: number;
-  qy: number;
-  qz: number;
-  qw: number;
-  /** Angular velocity (world-space rad/frame) */
-  vx: number;
-  vy: number;
+  qx: number; qy: number; qz: number; qw: number;
+  vx: number; vy: number;
   isDragging: boolean;
-  /** Whether auto-rotate is paused after user interaction */
   autoRotatePaused: boolean;
-  /** Timestamp of last user interaction (for auto-rotate resume delay) */
   lastInteractionTime: number;
 }
 
-// ─── Constants ──────────────────────────────────────────────────────────────
+// ─── Tuning Constants ───────────────────────────────────────────────────────
 
-const LERP_SPEED = 0.06;
-const DAMPING = 0.965;                    // velocity decay per frame
-const AUTO_ROTATE_SPEED = 0.003;          // rad/frame
-const AUTO_ROTATE_RESUME_DELAY = 800;     // ms
+const LERP_SPEED = 0.06;           // material transition speed
+const SCENE_LERP_SPEED = 0.035;    // scene re-lighting speed (slower = more cinematic)
+const DAMPING = 0.965;
+const AUTO_ROTATE_SPEED = 0.003;
+const AUTO_ROTATE_RESUME_DELAY = 800;
 
-// ─── Procedural Environment Map (simplified studio) ─────────────────────────
+// expo-gl drawingBuffer already includes device pixel ratio — always use 1 here
+const RENDERER_PIXEL_RATIO = 1;
 
-function createEnvironmentMap(renderer: THREE.WebGLRenderer): THREE.Texture | null {
-  try {
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    pmrem.compileCubemapShader();
+// ─── Scene Lighting Targets for Light & Dark Modes ──────────────────────────
 
-    const envScene = new THREE.Scene();
-    envScene.background = new THREE.Color('#020202');
-
-    // Primary ceiling softbox — creates the main specular highlight
-    const softbox = new THREE.Mesh(
-      new THREE.PlaneGeometry(10, 10),
-      new THREE.MeshBasicMaterial({ color: '#FFF4E8', side: THREE.DoubleSide }),
-    );
-    softbox.position.set(0, 6, 0);
-    softbox.rotation.x = Math.PI / 2;
-    envScene.add(softbox);
-
-    // Horizontal strip light — creates specular streaks across facets
-    const strip = new THREE.Mesh(
-      new THREE.PlaneGeometry(15, 0.15),
-      new THREE.MeshBasicMaterial({ color: '#FFFFFF', side: THREE.DoubleSide }),
-    );
-    strip.position.set(0, 1, -6);
-    envScene.add(strip);
-
-    // Vertical strip light — perpendicular cross-highlights
-    const vstrip = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.15, 8),
-      new THREE.MeshBasicMaterial({ color: '#E0EEFF', side: THREE.DoubleSide }),
-    );
-    vstrip.position.set(-5.5, 1, -2);
-    vstrip.rotation.y = Math.PI / 3;
-    envScene.add(vstrip);
-
-    // Cool floor undertone
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(8, 8),
-      new THREE.MeshBasicMaterial({ color: '#080810', side: THREE.DoubleSide }),
-    );
-    floor.position.set(0, -6, 0);
-    floor.rotation.x = -Math.PI / 2;
-    envScene.add(floor);
-
-    // 4 accent spheres — sparkle fire points in facets
-    const sphereGeo = new THREE.SphereGeometry(0.35, 8, 8);
-    const accents: [string, [number, number, number]][] = [
-      ['#FFFFFF', [1.5, 5.5, 1]],
-      ['#FFE0C0', [-2, 4.5, -2]],
-      ['#D0E0FF', [3, 2.5, -3]],
-      ['#FFF0D0', [-3, 3.5, 2.5]],
-    ];
-    for (const [color, pos] of accents) {
-      const s = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color }));
-      s.position.set(...pos);
-      envScene.add(s);
-    }
-
-    const envMap = pmrem.fromScene(envScene, 0, 0.1, 100).texture;
-    pmrem.dispose();
-
-    envScene.traverse((obj) => {
-      if (obj instanceof THREE.Mesh) {
-        obj.geometry.dispose();
-        (obj.material as THREE.Material).dispose();
-      }
-    });
-
-    return envMap;
-  } catch (e) {
-    if (__DEV__) console.warn('[GemView] EnvMap generation failed:', e);
-    return null;
-  }
+interface SceneTargets {
+  exposure: number;
+  ambientIntensity: number;
+  ambientColor: THREE.Color;
+  hemiSkyColor: THREE.Color;
+  hemiGroundColor: THREE.Color;
+  hemiIntensity: number;
+  fillIntensity: number;
+  contactShadowOpacity: number;
 }
 
-// ─── Aura Shader (single clean fresnel glow) ───────────────────────────────
+const DARK_SCENE: SceneTargets = {
+  exposure: 1.35,
+  ambientIntensity: 0.4,
+  ambientColor: new THREE.Color('#2A2530'),
+  hemiSkyColor: new THREE.Color('#2A2530'),
+  hemiGroundColor: new THREE.Color('#181515'),
+  hemiIntensity: 0.35,
+  fillIntensity: 1.0,
+  contactShadowOpacity: 0.3,
+};
 
-const AURA_VERTEX = /* glsl */ `
-varying vec3 vNormal;
-varying vec3 vViewPosition;
+const LIGHT_SCENE: SceneTargets = {
+  exposure: 1.55,
+  ambientIntensity: 0.5,
+  ambientColor: new THREE.Color('#C8BEB0'),
+  hemiSkyColor: new THREE.Color('#E8E4DE'),
+  hemiGroundColor: new THREE.Color('#C8C2BA'),
+  hemiIntensity: 0.45,
+  fillIntensity: 1.2,
+  contactShadowOpacity: 0.12,
+};
 
-void main() {
-  vNormal = normalize(normalMatrix * normal);
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-  vViewPosition = -mvPosition.xyz;
-  gl_Position = projectionMatrix * mvPosition;
+function getSceneTargets(mode: BackgroundMode): SceneTargets {
+  return mode === 'light' ? LIGHT_SCENE : DARK_SCENE;
 }
-`;
-
-const AURA_FRAGMENT = /* glsl */ `
-uniform float uTime;
-uniform vec3 uColor;
-uniform float uIntensity;
-
-varying vec3 vNormal;
-varying vec3 vViewPosition;
-
-void main() {
-  vec3 viewDir = normalize(vViewPosition);
-  float fresnel = 1.0 - abs(dot(vNormal, viewDir));
-  fresnel = pow(fresnel, 2.5);
-  float pulse = 0.85 + 0.15 * sin(uTime * 1.5);
-  float alpha = fresnel * uIntensity * pulse * 0.3;
-  gl_FragColor = vec4(uColor * 1.2, alpha);
-}
-`;
-
-// ─── Ground Light Pool Shader ───────────────────────────────────────────────
-
-const GROUND_GLOW_VERTEX = /* glsl */ `
-varying vec2 vUv;
-void main() {
-  vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}
-`;
-
-const GROUND_GLOW_FRAGMENT = /* glsl */ `
-uniform vec3 uColor;
-uniform float uIntensity;
-uniform float uTime;
-
-varying vec2 vUv;
-
-void main() {
-  float dist = length(vUv - 0.5) * 2.0;
-  float falloff = 1.0 - smoothstep(0.0, 1.0, dist);
-  falloff = pow(falloff, 2.5);
-  float breath = 0.92 + 0.08 * sin(uTime * 0.5);
-  float alpha = falloff * uIntensity * breath * 0.07;
-  gl_FragColor = vec4(uColor * 0.6, alpha);
-}
-`;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -219,6 +120,7 @@ interface Props {
   autoRotate?: boolean;
   enableFloat?: boolean;
   paused?: boolean;
+  backgroundMode?: BackgroundMode;
   onReady?: () => void;
   onError?: () => void;
   onFrame?: () => void;
@@ -253,6 +155,7 @@ export const GemView: React.FC<Props> = React.memo(({
   autoRotate = true,
   enableFloat = true,
   paused = false,
+  backgroundMode = 'dark',
   onReady,
   onError,
   onFrame,
@@ -269,23 +172,17 @@ export const GemView: React.FC<Props> = React.memo(({
   const materialRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
   const glRef = useRef<ExpoWebGLRenderingContext | null>(null);
 
-  // Arc core refs
-  const arcCoreRef = useRef<THREE.Mesh | null>(null);
-  const arcCoreMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
+  // Background + shadow refs
+  const bgQuadRef = useRef<BackgroundQuad | null>(null);
+  const contactShadowRef = useRef<THREE.Mesh | null>(null);
+
+  // Scene light refs (needed for re-lighting animation)
+  const ambientLightRef = useRef<THREE.AmbientLight | null>(null);
+  const hemiLightRef = useRef<THREE.HemisphereLight | null>(null);
+  const fillLightRef = useRef<THREE.DirectionalLight | null>(null);
 
   // Environment refs
   const envMapRef = useRef<THREE.Texture | null>(null);
-
-  // Aura ref (single clean glow)
-  const auraRef = useRef<THREE.Mesh | null>(null);
-  const auraMatRef = useRef<THREE.ShaderMaterial | null>(null);
-
-  // Ground light pool
-  const groundGlowRef = useRef<THREE.Mesh | null>(null);
-  const groundGlowMatRef = useRef<THREE.ShaderMaterial | null>(null);
-
-  // 2 orbiting sweep lights
-  const sweepLightsRef = useRef<THREE.PointLight[]>([]);
 
   // Prop refs (for animation loop closure)
   const tierKeyRef = useRef(tierKey);
@@ -294,6 +191,7 @@ export const GemView: React.FC<Props> = React.memo(({
   const autoRotateRef = useRef(autoRotate);
   const enableFloatRef = useRef(enableFloat);
   const pausedRef = useRef(paused);
+  const backgroundModeRef = useRef(backgroundMode);
   const onFrameRef = useRef(onFrame);
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
@@ -301,9 +199,13 @@ export const GemView: React.FC<Props> = React.memo(({
   // Material interpolation targets
   const targetColorRef = useRef(new THREE.Color());
   const targetEmissiveRef = useRef(new THREE.Color());
-  const targetGlowColorRef = useRef(new THREE.Color());
+  const targetAttenuationColorRef = useRef(new THREE.Color());
   const targetMatRef = useRef<ReturnType<typeof safeMaterial> | null>(null);
   const isLerpingRef = useRef(false);
+
+  // Scene re-lighting targets (for mode transition animation)
+  const sceneTargetsRef = useRef<SceneTargets>(getSceneTargets(backgroundMode));
+  const isSceneLerpingRef = useRef(false);
 
   // Keep prop refs current
   useEffect(() => { tierKeyRef.current = tierKey; }, [tierKey]);
@@ -322,36 +224,42 @@ export const GemView: React.FC<Props> = React.memo(({
     const mat = safeMaterial(TIER_MATERIALS[tierKey]);
     targetColorRef.current.set(mat.color);
     targetEmissiveRef.current.set(mat.emissive);
-    targetGlowColorRef.current.set(mat.glowColor);
+    targetAttenuationColorRef.current.set(mat.attenuationColor);
     targetMatRef.current = mat;
     isLerpingRef.current = true;
 
-    // Update arc core
-    if (arcCoreMaterialRef.current) {
-      (arcCoreMaterialRef.current.uniforms.uColor as { value: THREE.Color }).value.set(mat.glowColor);
-      arcCoreMaterialRef.current.uniforms.uIntensity.value = mat.glowIntensity;
-    }
-
-    // Update aura
-    if (auraMatRef.current) {
-      (auraMatRef.current.uniforms.uColor as { value: THREE.Color }).value.set(mat.glowColor);
-      auraMatRef.current.uniforms.uIntensity.value = mat.glowIntensity;
-    }
-
-    // Update ground light pool
-    if (groundGlowMatRef.current) {
-      (groundGlowMatRef.current.uniforms.uColor as { value: THREE.Color }).value.set(mat.glowColor);
-      groundGlowMatRef.current.uniforms.uIntensity.value = mat.glowIntensity;
+    // Update background auto-contrast for the new tier (with current mode)
+    if (bgQuadRef.current) {
+      bgQuadRef.current.setTargetColors(tierKey, backgroundModeRef.current);
+      isSceneLerpingRef.current = true;
     }
   }, [tierKey]);
 
-  // ── Geometry update → immediate swap + reframe camera using shape profile ──
+  // ── Background mode change → scene re-lighting ──
+  useEffect(() => {
+    backgroundModeRef.current = backgroundMode;
+    if (!rendererRef.current) return;
+
+    // Set new scene lighting targets
+    sceneTargetsRef.current = getSceneTargets(backgroundMode);
+    isSceneLerpingRef.current = true;
+
+    // Set new background quad color targets
+    if (bgQuadRef.current) {
+      bgQuadRef.current.setTargetColors(tierKeyRef.current, backgroundMode);
+    }
+  }, [backgroundMode]);
+
+  // ── Geometry update → immediate swap + reframe camera ──
   useEffect(() => {
     if (!meshRef.current || !cameraRef.current) return;
     const profile = getShapeProfile(shape);
+    const outerScale = gemScale * profile.baseScale;
+
     const oldGeom = meshRef.current.geometry;
-    meshRef.current.geometry = createGemGeometry(shape, gemScale * profile.baseScale);
+    meshRef.current.geometry = createGemGeometry(shape, outerScale);
     oldGeom.dispose();
+
     fitCameraToObject(cameraRef.current, meshRef.current, profile.cameraPadding, profile.yOffset);
   }, [shape, gemScale]);
 
@@ -366,13 +274,15 @@ export const GemView: React.FC<Props> = React.memo(({
         envMapRef.current.dispose();
         envMapRef.current = null;
       }
-      if (auraRef.current) {
-        auraRef.current.geometry.dispose();
-        (auraRef.current.material as THREE.Material).dispose();
+      if (bgQuadRef.current) {
+        bgQuadRef.current.dispose();
+        bgQuadRef.current = null;
       }
-      if (groundGlowRef.current) {
-        groundGlowRef.current.geometry.dispose();
-        (groundGlowRef.current.material as THREE.Material).dispose();
+      if (contactShadowRef.current) {
+        contactShadowRef.current.geometry.dispose();
+        const csMat = contactShadowRef.current.material as THREE.MeshBasicMaterial;
+        if (csMat.map) csMat.map.dispose();
+        csMat.dispose();
       }
       if (rendererRef.current) {
         rendererRef.current.dispose();
@@ -385,7 +295,8 @@ export const GemView: React.FC<Props> = React.memo(({
   // ── GL Context (fires ONCE) ──
   const onContextCreate = useCallback((gl: ExpoWebGLRenderingContext) => {
     glRef.current = gl;
-    const preset = NOIR_LIGHTS;
+    const studio = STUDIO_LIGHTS;
+    const initialScene = getSceneTargets(backgroundModeRef.current);
 
     try {
       // ─ Renderer ─
@@ -403,14 +314,16 @@ export const GemView: React.FC<Props> = React.memo(({
         alpha: false,
       });
       renderer.setSize(gl.drawingBufferWidth, gl.drawingBufferHeight);
-      renderer.setPixelRatio(1);
+      renderer.setPixelRatio(RENDERER_PIXEL_RATIO);
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.8;
+      renderer.toneMappingExposure = initialScene.exposure;
       renderer.outputColorSpace = THREE.SRGBColorSpace;
-      renderer.setClearColor(new THREE.Color(preset.bgColor), 1);
+      renderer.setClearColor(new THREE.Color('#050505'), 1);
+      renderer.shadowMap.enabled = false;
+
       rendererRef.current = renderer;
 
-      // Capture renderer info
+      // Diagnostics
       const glInfo = renderer.getContext().getExtension('WEBGL_debug_renderer_info');
       if (glInfo) {
         const vendor = renderer.getContext().getParameter(glInfo.UNMASKED_VENDOR_WEBGL);
@@ -424,8 +337,13 @@ export const GemView: React.FC<Props> = React.memo(({
       const scene = new THREE.Scene();
       sceneRef.current = scene;
 
-      // ─ Procedural Environment Map ─
-      const envMap = createEnvironmentMap(renderer);
+      // ─ Screen-space Background Quad (auto-contrast, mode-aware) ─
+      const bgQuad = createBackgroundQuad(tierKeyRef.current, backgroundModeRef.current);
+      scene.add(bgQuad.mesh);
+      bgQuadRef.current = bgQuad;
+
+      // ─ Studio Environment Map (PMREM) ─
+      const envMap = createStudioEnvironment(renderer);
       if (envMap) {
         scene.environment = envMap;
         envMapRef.current = envMap;
@@ -438,25 +356,43 @@ export const GemView: React.FC<Props> = React.memo(({
       camera.lookAt(0, 0, 0);
       cameraRef.current = camera;
 
-      // ─ Lights (5-point noir rig) ─
-      const ambient = new THREE.AmbientLight(preset.ambient.color, preset.ambient.intensity);
-      scene.add(ambient);
+      // ─ Studio Lighting Rig (initialized to current mode) ─
 
-      const keyLight = new THREE.DirectionalLight(preset.key.color, preset.key.intensity);
-      keyLight.position.set(...preset.key.position);
+      const ambient = new THREE.AmbientLight(
+        initialScene.ambientColor.clone(),
+        initialScene.ambientIntensity,
+      );
+      scene.add(ambient);
+      ambientLightRef.current = ambient;
+
+      const hemiLight = new THREE.HemisphereLight(
+        initialScene.hemiSkyColor.clone(),
+        initialScene.hemiGroundColor.clone(),
+        initialScene.hemiIntensity,
+      );
+      scene.add(hemiLight);
+      hemiLightRef.current = hemiLight;
+
+      const keyLight = new THREE.DirectionalLight(studio.key.color, studio.key.intensity);
+      keyLight.position.set(...studio.key.position);
       scene.add(keyLight);
 
-      const fillLight = new THREE.DirectionalLight(preset.fill.color, preset.fill.intensity);
-      fillLight.position.set(...preset.fill.position);
+      const fillLight = new THREE.DirectionalLight(studio.fill.color, initialScene.fillIntensity);
+      fillLight.position.set(...studio.fill.position);
       scene.add(fillLight);
+      fillLightRef.current = fillLight;
 
-      const rimLight = new THREE.DirectionalLight(preset.rim.color, preset.rim.intensity);
-      rimLight.position.set(...preset.rim.position);
+      const rimLight = new THREE.DirectionalLight(studio.rim.color, studio.rim.intensity);
+      rimLight.position.set(...studio.rim.position);
       scene.add(rimLight);
 
-      const accentLight = new THREE.PointLight(preset.accent.color, preset.accent.intensity, 10, 2);
-      accentLight.position.set(...preset.accent.position);
-      scene.add(accentLight);
+      const kickerLight = new THREE.PointLight(studio.kicker.color, studio.kicker.intensity, 12, 2);
+      kickerLight.position.set(...studio.kicker.position);
+      scene.add(kickerLight);
+
+      const bounceLight = new THREE.DirectionalLight(studio.bounce.color, studio.bounce.intensity);
+      bounceLight.position.set(...studio.bounce.position);
+      scene.add(bounceLight);
 
       // ─ Shape profile ─
       const shapeProfile = getShapeProfile(shapeRef.current);
@@ -471,23 +407,27 @@ export const GemView: React.FC<Props> = React.memo(({
         roughness: matConfig.roughness,
         clearcoat: matConfig.clearcoat,
         clearcoatRoughness: matConfig.clearcoatRoughness,
-        transparent: true,
-        opacity: matConfig.opacity,
+        transparent: false,
+        opacity: 1.0,
         envMapIntensity: matConfig.envMapIntensity,
         transmission: matConfig.transmission,
         ior: matConfig.ior,
         thickness: matConfig.thickness,
+        attenuationColor: new THREE.Color(matConfig.attenuationColor),
+        attenuationDistance: matConfig.attenuationDistance,
+        specularIntensity: matConfig.specularIntensity,
         side: THREE.DoubleSide,
       });
       materialRef.current = material;
 
       // ─ Gem Mesh ─
-      const geometry = createGemGeometry(shapeRef.current, gemScaleRef.current * shapeProfile.baseScale);
+      const outerScale = gemScaleRef.current * shapeProfile.baseScale;
+      const geometry = createGemGeometry(shapeRef.current, outerScale);
       const mesh = new THREE.Mesh(geometry, material);
+      mesh.renderOrder = 2;
       scene.add(mesh);
       meshRef.current = mesh;
 
-      // Apply initial orientation from shape profile
       const [ax, ay, az, angle] = shapeProfile.initialOrientation;
       const axisLen = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
       _q1.setFromAxisAngle(
@@ -495,7 +435,6 @@ export const GemView: React.FC<Props> = React.memo(({
         angle,
       );
       mesh.quaternion.copy(_q1);
-      // Write to rotation state so gesture system is in sync
       rotationState.qx = _q1.x;
       rotationState.qy = _q1.y;
       rotationState.qz = _q1.z;
@@ -503,80 +442,11 @@ export const GemView: React.FC<Props> = React.memo(({
 
       fitCameraToObject(camera, mesh, shapeProfile.cameraPadding, shapeProfile.yOffset);
 
-      // ─ Arc Core (inside gem, smooth glow) ─
-      const arcCoreGeom = new THREE.SphereGeometry(0.38, 32, 32);
-      const arcCoreMat = createArcCoreMaterial(matConfig.glowColor, matConfig.glowIntensity);
-      const arcCore = new THREE.Mesh(arcCoreGeom, arcCoreMat);
-      scene.add(arcCore);
-      arcCoreRef.current = arcCore;
-      arcCoreMaterialRef.current = arcCoreMat;
-
-      // ─ Aura (single clean fresnel glow around gem) ─
-      const auraGeom = new THREE.SphereGeometry(0.85, 24, 24);
-      const auraMat = new THREE.ShaderMaterial({
-        vertexShader: AURA_VERTEX,
-        fragmentShader: AURA_FRAGMENT,
-        uniforms: {
-          uTime: { value: 0 },
-          uColor: { value: new THREE.Color(matConfig.glowColor) },
-          uIntensity: { value: matConfig.glowIntensity },
-        },
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.FrontSide,
-      });
-      const aura = new THREE.Mesh(auraGeom, auraMat);
-      scene.add(aura);
-      auraRef.current = aura;
-      auraMatRef.current = auraMat;
-
-      // ─ Ground Light Pool (gem casts light downward) ─
-      const groundGeom = new THREE.CircleGeometry(2.0, 32);
-      const groundMat = new THREE.ShaderMaterial({
-        vertexShader: GROUND_GLOW_VERTEX,
-        fragmentShader: GROUND_GLOW_FRAGMENT,
-        uniforms: {
-          uTime: { value: 0 },
-          uColor: { value: new THREE.Color(matConfig.glowColor) },
-          uIntensity: { value: matConfig.glowIntensity },
-        },
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
-      const groundGlow = new THREE.Mesh(groundGeom, groundMat);
-      groundGlow.rotation.x = -Math.PI / 2;
-      groundGlow.position.y = -1.35;
-      scene.add(groundGlow);
-      groundGlowRef.current = groundGlow;
-      groundGlowMatRef.current = groundMat;
-
-      // ─ 2 Orbiting Sweep Lights ─
-      const sweepConfigs: [string, number, number][] = [
-        ['#FFFFFF', 0.8, 8],   // white, bright
-        ['#FFE0C0', 0.5, 6],   // warm, medium
-      ];
-      const sweepLights: THREE.PointLight[] = [];
-      for (const [color, intensity, range] of sweepConfigs) {
-        const light = new THREE.PointLight(color, intensity, range, 2);
-        scene.add(light);
-        sweepLights.push(light);
-      }
-      sweepLightsRef.current = sweepLights;
-
       // ─ Contact Shadow ─
-      const shadowGeom = new THREE.PlaneGeometry(1.4, 0.7);
-      const shadowMat = new THREE.MeshBasicMaterial({
-        color: 0x000000,
-        transparent: true,
-        opacity: 0.04,
-      });
-      const shadow = new THREE.Mesh(shadowGeom, shadowMat);
-      shadow.rotation.x = -Math.PI / 2;
-      shadow.position.y = -1.2;
-      scene.add(shadow);
+      const contactShadow = createContactShadow();
+      (contactShadow.material as THREE.MeshBasicMaterial).opacity = initialScene.contactShadowOpacity;
+      scene.add(contactShadow);
+      contactShadowRef.current = contactShadow;
 
       // ─── Animation Loop ─────────────────────────────────────────────────
       const clock = new THREE.Clock();
@@ -592,7 +462,7 @@ export const GemView: React.FC<Props> = React.memo(({
         const t = clock.getElapsedTime();
         const rs = rotationState;
 
-        // ── Material interpolation ──
+        // ── Material interpolation (smooth tier transitions) ──
         if (isLerpingRef.current && targetMatRef.current && materialRef.current) {
           const m = materialRef.current;
           const target = targetMatRef.current;
@@ -605,10 +475,13 @@ export const GemView: React.FC<Props> = React.memo(({
           m.roughness += (target.roughness - m.roughness) * spd;
           m.clearcoat += (target.clearcoat - m.clearcoat) * spd;
           m.clearcoatRoughness += (target.clearcoatRoughness - m.clearcoatRoughness) * spd;
-          m.opacity += (target.opacity - m.opacity) * spd;
+          m.envMapIntensity += (target.envMapIntensity - m.envMapIntensity) * spd;
           m.transmission += (target.transmission - m.transmission) * spd;
           m.ior += (target.ior - m.ior) * spd;
           m.thickness += (target.thickness - m.thickness) * spd;
+          m.attenuationColor.lerp(targetAttenuationColorRef.current, spd);
+          m.attenuationDistance += (target.attenuationDistance - m.attenuationDistance) * spd;
+          m.specularIntensity += (target.specularIntensity - m.specularIntensity) * spd;
 
           if (Math.abs(m.metalness - target.metalness) < 0.003) {
             m.color.copy(targetColorRef.current);
@@ -618,32 +491,87 @@ export const GemView: React.FC<Props> = React.memo(({
             m.roughness = target.roughness;
             m.clearcoat = target.clearcoat;
             m.clearcoatRoughness = target.clearcoatRoughness;
-            m.opacity = target.opacity;
+            m.envMapIntensity = target.envMapIntensity;
             m.transmission = target.transmission;
             m.ior = target.ior;
             m.thickness = target.thickness;
+            m.attenuationColor.copy(targetAttenuationColorRef.current);
+            m.attenuationDistance = target.attenuationDistance;
+            m.specularIntensity = target.specularIntensity;
             isLerpingRef.current = false;
             targetMatRef.current = null;
           }
         }
 
-        // ── Quaternion rotation — true 360°, no pitch limits ──
+        // ── Scene re-lighting animation (smooth mode transitions) ──
+        // The ENTIRE studio re-lights: exposure, ambient, hemisphere, fill,
+        // contact shadow, and background quad all animate together at
+        // SCENE_LERP_SPEED for a cinematic "re-lit" feel.
+        if (isSceneLerpingRef.current) {
+          const st = sceneTargetsRef.current;
+          const sspd = SCENE_LERP_SPEED;
+
+          renderer.toneMappingExposure += (st.exposure - renderer.toneMappingExposure) * sspd;
+
+          if (ambientLightRef.current) {
+            ambientLightRef.current.intensity += (st.ambientIntensity - ambientLightRef.current.intensity) * sspd;
+            ambientLightRef.current.color.lerp(st.ambientColor, sspd);
+          }
+
+          if (hemiLightRef.current) {
+            hemiLightRef.current.intensity += (st.hemiIntensity - hemiLightRef.current.intensity) * sspd;
+            hemiLightRef.current.color.lerp(st.hemiSkyColor, sspd);
+            hemiLightRef.current.groundColor.lerp(st.hemiGroundColor, sspd);
+          }
+
+          if (fillLightRef.current) {
+            fillLightRef.current.intensity += (st.fillIntensity - fillLightRef.current.intensity) * sspd;
+          }
+
+          if (contactShadowRef.current) {
+            const csMat = contactShadowRef.current.material as THREE.MeshBasicMaterial;
+            csMat.opacity += (st.contactShadowOpacity - csMat.opacity) * sspd;
+          }
+
+          let bgStillLerping = false;
+          if (bgQuadRef.current) {
+            bgStillLerping = bgQuadRef.current.lerpColors(sspd);
+          }
+
+          const exposureDiff = Math.abs(renderer.toneMappingExposure - st.exposure);
+          if (exposureDiff < 0.005 && !bgStillLerping) {
+            renderer.toneMappingExposure = st.exposure;
+            if (ambientLightRef.current) {
+              ambientLightRef.current.intensity = st.ambientIntensity;
+              ambientLightRef.current.color.copy(st.ambientColor);
+            }
+            if (hemiLightRef.current) {
+              hemiLightRef.current.intensity = st.hemiIntensity;
+              hemiLightRef.current.color.copy(st.hemiSkyColor);
+              hemiLightRef.current.groundColor.copy(st.hemiGroundColor);
+            }
+            if (fillLightRef.current) fillLightRef.current.intensity = st.fillIntensity;
+            if (contactShadowRef.current) {
+              (contactShadowRef.current.material as THREE.MeshBasicMaterial).opacity = st.contactShadowOpacity;
+            }
+            isSceneLerpingRef.current = false;
+          }
+        }
+
+        // ── Quaternion rotation ──
         _q1.set(rs.qx, rs.qy, rs.qz, rs.qw);
 
         if (!rs.isDragging) {
-          // Delayed auto-rotate resume
           const timeSinceInteraction = Date.now() - rs.lastInteractionTime;
           if (rs.autoRotatePaused && timeSinceInteraction > AUTO_ROTATE_RESUME_DELAY) {
             rs.autoRotatePaused = false;
           }
 
-          // Auto-rotate around world Y
           if (autoRotateRef.current && !rs.autoRotatePaused) {
             _q2.setFromAxisAngle(_axisY, AUTO_ROTATE_SPEED);
             _q1.premultiply(_q2);
           }
 
-          // Velocity inertia with asymptotic decay
           if (Math.abs(rs.vx) > 0.00001 || Math.abs(rs.vy) > 0.00001) {
             _q2.setFromAxisAngle(_axisY, rs.vy);
             _q1.premultiply(_q2);
@@ -661,65 +589,18 @@ export const GemView: React.FC<Props> = React.memo(({
 
         const floatY = enableFloatRef.current ? Math.sin(t * 0.7) * 0.06 : 0;
 
-        // ── Apply to gem mesh ──
         if (meshRef.current) {
           meshRef.current.quaternion.set(rs.qx, rs.qy, rs.qz, rs.qw);
           meshRef.current.position.y = floatY;
         }
 
-        // ── Arc core follows gem ──
-        if (arcCoreRef.current) {
-          arcCoreRef.current.quaternion.set(rs.qx, rs.qy, rs.qz, rs.qw);
-          arcCoreRef.current.position.y = floatY;
-        }
-        if (arcCoreMaterialRef.current) {
-          arcCoreMaterialRef.current.uniforms.uTime.value = t;
-        }
-
-        // ── Aura follows gem ──
-        if (auraRef.current) {
-          auraRef.current.quaternion.set(rs.qx, rs.qy, rs.qz, rs.qw);
-          auraRef.current.position.y = floatY;
-          if (auraMatRef.current) {
-            auraMatRef.current.uniforms.uTime.value = t;
-          }
-        }
-
-        // ── Ground light pool (static, subtle breathing) ──
-        if (groundGlowMatRef.current) {
-          groundGlowMatRef.current.uniforms.uTime.value = t;
-        }
-
-        // ── 2 sweep lights orbit ──
-        const sweepLights = sweepLightsRef.current;
-        if (sweepLights.length === 2) {
-          // Light 0: slow wide orbit
-          const a0 = t * 0.4;
-          sweepLights[0].position.set(
-            Math.cos(a0) * 2.5,
-            Math.sin(t * 0.5) * 0.6 + floatY + 0.5,
-            Math.sin(a0) * 2.5,
-          );
-          sweepLights[0].intensity = 0.6 + 0.3 * Math.sin(t * 1.8);
-
-          // Light 1: medium orbit, opposite phase
-          const a1 = t * 0.6 + Math.PI;
-          sweepLights[1].position.set(
-            Math.cos(a1) * 2.0,
-            Math.sin(t * 0.4 + 1.5) * 0.5 + floatY - 0.2,
-            Math.sin(a1) * 2.0,
-          );
-          sweepLights[1].intensity = 0.4 + 0.25 * Math.sin(t * 2.5 + 1.0);
-        }
-
-        // ── Camera micro-breathing ──
         camera.position.x = Math.sin(t * 0.23) * 0.012;
         camera.position.y = shapeProfile.yOffset + Math.cos(t * 0.31) * 0.008;
 
         renderer.render(scene, camera);
         gl.endFrameEXP();
 
-        // ── Diagnostics ──
+        // Diagnostics
         const now = performance.now();
         gemDiagnostics.lastFrameTime = Date.now();
         gemDiagnostics.frameCount++;
@@ -761,10 +642,10 @@ export const GemView: React.FC<Props> = React.memo(({
           alpha: false,
         });
         safeRenderer.setSize(gl.drawingBufferWidth, gl.drawingBufferHeight);
-        safeRenderer.setPixelRatio(1);
+        safeRenderer.setPixelRatio(RENDERER_PIXEL_RATIO);
         safeRenderer.toneMapping = THREE.ACESFilmicToneMapping;
-        safeRenderer.toneMappingExposure = 1.4;
-        safeRenderer.setClearColor(new THREE.Color('#060606'), 1);
+        safeRenderer.toneMappingExposure = 1.2;
+        safeRenderer.setClearColor(new THREE.Color('#080808'), 1);
         rendererRef.current = safeRenderer;
 
         const safeScene = new THREE.Scene();
@@ -799,10 +680,8 @@ export const GemView: React.FC<Props> = React.memo(({
         meshRef.current = safeMesh;
 
         safeMesh.quaternion.set(
-          rotationState.qx,
-          rotationState.qy,
-          rotationState.qz,
-          rotationState.qw,
+          rotationState.qx, rotationState.qy,
+          rotationState.qz, rotationState.qw,
         );
 
         fitCameraToObject(safeCamera, safeMesh, 1.5, 0.15);
@@ -814,14 +693,12 @@ export const GemView: React.FC<Props> = React.memo(({
           if (pausedRef.current) return;
 
           const rs = rotationState;
-
           _q1.set(rs.qx, rs.qy, rs.qz, rs.qw);
           if (!rs.isDragging) {
             const timeSinceInteraction = Date.now() - rs.lastInteractionTime;
             if (rs.autoRotatePaused && timeSinceInteraction > AUTO_ROTATE_RESUME_DELAY) {
               rs.autoRotatePaused = false;
             }
-
             if (autoRotateRef.current && !rs.autoRotatePaused) {
               _q2.setFromAxisAngle(_axisY, AUTO_ROTATE_SPEED);
               _q1.premultiply(_q2);
@@ -834,10 +711,8 @@ export const GemView: React.FC<Props> = React.memo(({
               rs.vx *= DAMPING;
               rs.vy *= DAMPING;
             }
-            rs.qx = _q1.x;
-            rs.qy = _q1.y;
-            rs.qz = _q1.z;
-            rs.qw = _q1.w;
+            rs.qx = _q1.x; rs.qy = _q1.y;
+            rs.qz = _q1.z; rs.qw = _q1.w;
           }
 
           safeMesh.quaternion.set(rs.qx, rs.qy, rs.qz, rs.qw);
@@ -865,7 +740,7 @@ export const GemView: React.FC<Props> = React.memo(({
         onErrorRef.current?.();
       }
     }
-  }, []); // Empty deps — fires once
+  }, []);
 
   return (
     <View style={[styles.container, { width: w, height: h }]}>

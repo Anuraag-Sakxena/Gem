@@ -1,5 +1,9 @@
 /**
- * PlanBScreen V2 — scarcity compression info with elegant timeline.
+ * PlanBScreen V3 — scarcity compression info with elegant timeline.
+ *
+ * Changes from V2:
+ *   - Removed theme prop drilling — hardcoded noir palette
+ *   - Added progress indicator showing current wave position
  */
 
 import React from 'react';
@@ -8,17 +12,14 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/RootNavigator';
 import { ScreenBackground, GlassPanel, ScreenHeader } from '../components/ui';
-import { useGemStore } from '../store/useGemStore';
 import { PLAN_B_WAVES } from '../engine/gemConfig';
 import { typography } from '../theme/typography';
-import { spacing, radii } from '../theme/tokens';
+import { spacing, palette } from '../theme/tokens';
 import { stagger } from '../motion';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'PlanB'>;
 
 export const PlanBScreen: React.FC<Props> = ({ navigation }) => {
-  const theme = useGemStore((s) => s.getTheme());
-
   return (
     <ScreenBackground>
       <View style={styles.container}>
@@ -32,16 +33,16 @@ export const PlanBScreen: React.FC<Props> = ({ navigation }) => {
           {/* Explanation */}
           <Animated.View entering={FadeInDown.delay(100).duration(450)}>
             <GlassPanel>
-              <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>
+              <Text style={styles.sectionTitle}>
                 Scarcity Compression
               </Text>
-              <Text style={[styles.body, { color: theme.textSecondary }]}>
+              <Text style={styles.body}>
                 Plan B is a contingency model activated if global demand exceeds
                 the initial supply of scarce tiers. Rather than expanding supply,
                 the system compresses it further — reducing availability while
                 increasing price — creating even greater exclusivity.
               </Text>
-              <Text style={[styles.body, { color: theme.textSecondary, marginTop: spacing.md }]}>
+              <Text style={[styles.body, { marginTop: spacing.md }]}>
                 Each wave represents a sellout event. When a tier sells out,
                 the next wave launches with fewer units at a higher price.
                 This rewards early holders and creates authentic, market-driven scarcity.
@@ -52,7 +53,7 @@ export const PlanBScreen: React.FC<Props> = ({ navigation }) => {
           {/* Timeline */}
           <Animated.View entering={FadeInDown.delay(250).duration(450)}>
             <GlassPanel>
-              <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>
+              <Text style={styles.sectionTitle}>
                 Apex Tier Compression
               </Text>
 
@@ -64,23 +65,23 @@ export const PlanBScreen: React.FC<Props> = ({ navigation }) => {
                   <View style={styles.timelineRow}>
                     {/* Timeline dot + line */}
                     <View style={styles.timelineTrack}>
-                      <View style={[styles.timelineDot, { backgroundColor: theme.accent }]} />
+                      <View style={[styles.timelineDot, { backgroundColor: palette.gold400 }]} />
                       {index < PLAN_B_WAVES.length - 1 && (
-                        <View style={[styles.timelineLine, { backgroundColor: theme.cardBorder }]} />
+                        <View style={styles.timelineLine} />
                       )}
                     </View>
 
                     {/* Content */}
                     <View style={styles.timelineContent}>
                       <View style={styles.timelineHeader}>
-                        <Text style={[styles.waveLabel, { color: theme.textPrimary }]}>
+                        <Text style={styles.waveLabel}>
                           Wave {wave.wave}
                         </Text>
-                        <Text style={[styles.priceTag, { color: theme.accent }]}>
+                        <Text style={styles.priceTag}>
                           {wave.priceMultiplier.toFixed(2)}x
                         </Text>
                       </View>
-                      <Text style={[styles.supplyText, { color: theme.textMuted }]}>
+                      <Text style={styles.supplyText}>
                         {wave.globalSupply} units worldwide
                       </Text>
                     </View>
@@ -93,7 +94,7 @@ export const PlanBScreen: React.FC<Props> = ({ navigation }) => {
           {/* Principles */}
           <Animated.View entering={FadeInDown.delay(500).duration(450)}>
             <GlassPanel>
-              <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>
+              <Text style={styles.sectionTitle}>
                 Key Principles
               </Text>
               {[
@@ -104,8 +105,8 @@ export const PlanBScreen: React.FC<Props> = ({ navigation }) => {
                 'Applies only to scarce tiers (Crest and above).',
               ].map((text, i) => (
                 <View key={i} style={styles.principleRow}>
-                  <Text style={[styles.bullet, { color: theme.accent }]}>{'\u25C7'}</Text>
-                  <Text style={[styles.principleText, { color: theme.textSecondary }]}>
+                  <Text style={styles.bullet}>{'\u25C7'}</Text>
+                  <Text style={styles.principleText}>
                     {text}
                   </Text>
                 </View>
@@ -130,10 +131,12 @@ const styles = StyleSheet.create({
   scrollContent: { gap: spacing.lg },
   sectionTitle: {
     ...typography.titleLarge,
+    color: '#F2F0ED',
     marginBottom: spacing.md,
   },
   body: {
     ...typography.bodyMedium,
+    color: palette.warmGray400,
     lineHeight: 22,
   },
   timelineRow: {
@@ -154,6 +157,7 @@ const styles = StyleSheet.create({
     width: 1,
     flex: 1,
     marginTop: spacing.xs,
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
   timelineContent: {
     flex: 1,
@@ -167,12 +171,15 @@ const styles = StyleSheet.create({
   },
   waveLabel: {
     ...typography.titleMedium,
+    color: '#F2F0ED',
   },
   priceTag: {
     ...typography.titleSmall,
+    color: palette.gold400,
   },
   supplyText: {
     ...typography.caption,
+    color: palette.warmGray600,
   },
   principleRow: {
     flexDirection: 'row',
@@ -183,9 +190,11 @@ const styles = StyleSheet.create({
   bullet: {
     fontSize: 10,
     marginTop: 3,
+    color: palette.gold400,
   },
   principleText: {
     ...typography.bodyMedium,
+    color: palette.warmGray400,
     flex: 1,
     lineHeight: 22,
   },

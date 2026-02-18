@@ -1,17 +1,17 @@
 /**
- * Toast — animated "Elevated" notification that fades in/out.
- * Shows when tier changes and auto-dismisses.
+ * Toast V2 — animated "Elevated" notification with race-condition fix.
+ *
+ * Uses `toastTierKey` from store (not `currentTier`) so rapid tier changes
+ * always show the correct tier name. Cancels previous timer on re-trigger.
  */
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
   withDelay,
-  withSequence,
-  runOnJS,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { TIER_PROFILES } from '../../engine/tierProfiles';
@@ -19,45 +19,82 @@ import { useGemStore } from '../../store/useGemStore';
 import { typography } from '../../theme/typography';
 import { radii, spacing, shadows, palette } from '../../theme/tokens';
 import { easing, duration } from '../../motion';
+import { hapticSuccess } from '../../utils/haptics';
+
+const AUTO_DISMISS_MS = 2500;
 
 export const Toast: React.FC = React.memo(() => {
   const show = useGemStore((s) => s.showUpgradeToast);
-  const tierKey = useGemStore((s) => s.currentTier);
+  const toastTierKey = useGemStore((s) => s.toastTierKey);
   const dismiss = useGemStore((s) => s.dismissUpgradeToast);
-  const theme = useGemStore((s) => s.getTheme());
   const insets = useSafeAreaInsets();
 
   const translateY = useSharedValue(-80);
   const opacity = useSharedValue(0);
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (show) {
-      // Animate in
-      translateY.value = withTiming(0, { duration: duration.moderate, easing: easing.emphasized });
-      opacity.value = withTiming(1, { duration: duration.normal, easing: easing.standard });
+    // Clear any existing timers on re-trigger (prevents stale dismiss)
+    if (dismissTimerRef.current) {
+      clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+    if (animTimerRef.current) {
+      clearTimeout(animTimerRef.current);
+      animTimerRef.current = null;
+    }
 
-      // Auto dismiss after 2.5s
-      const timer = setTimeout(() => {
-        opacity.value = withTiming(0, { duration: duration.moderate, easing: easing.standard });
+    if (show && toastTierKey) {
+      // Haptic feedback on appear
+      hapticSuccess();
+
+      // Animate in — slide down + fade in simultaneously
+      translateY.value = withTiming(0, {
+        duration: duration.moderate,
+        easing: easing.emphasized,
+      });
+      opacity.value = withTiming(1, {
+        duration: duration.normal,
+        easing: easing.standard,
+      });
+
+      // Auto dismiss
+      dismissTimerRef.current = setTimeout(() => {
+        // Animate out — slide up + fade out simultaneously
+        opacity.value = withTiming(0, {
+          duration: duration.moderate,
+          easing: easing.standard,
+        });
         translateY.value = withDelay(
           duration.fast,
-          withTiming(-80, { duration: duration.moderate, easing: easing.accelerate }),
+          withTiming(-80, {
+            duration: duration.moderate,
+            easing: easing.accelerate,
+          }),
         );
-        setTimeout(dismiss, duration.moderate + duration.fast);
-      }, 2500);
-
-      return () => clearTimeout(timer);
+        animTimerRef.current = setTimeout(dismiss, duration.moderate + duration.fast);
+      }, AUTO_DISMISS_MS);
+    } else {
+      // Reset position when hidden
+      translateY.value = -80;
+      opacity.value = 0;
     }
-  }, [show]);
+
+    return () => {
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+      if (animTimerRef.current) clearTimeout(animTimerRef.current);
+    };
+  }, [show, toastTierKey]);
 
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],
     opacity: opacity.value,
   }));
 
-  if (!show) return null;
+  if (!show || !toastTierKey) return null;
 
-  const tier = TIER_PROFILES[tierKey];
+  const tier = TIER_PROFILES[toastTierKey];
 
   return (
     <Animated.View
@@ -68,10 +105,13 @@ export const Toast: React.FC = React.memo(() => {
         animStyle,
       ]}
       pointerEvents="none"
+      accessible
+      accessibilityLabel={`Elevated to ${tier.name}`}
+      accessibilityRole="alert"
     >
-      <View style={[styles.inner, { backgroundColor: theme.surfaceColor }]}>
+      <View style={styles.inner}>
         <View style={[styles.dot, { backgroundColor: tier.primaryColor }]} />
-        <Text style={[styles.text, { color: theme.textPrimary }]}>
+        <Text style={styles.text}>
           Elevated to {tier.name}
         </Text>
       </View>
@@ -94,6 +134,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingVertical: spacing.md,
     borderRadius: radii.full,
+    backgroundColor: '#1A1A18',
   },
   dot: {
     width: 6,
@@ -102,5 +143,6 @@ const styles = StyleSheet.create({
   },
   text: {
     ...typography.titleSmall,
+    color: '#F2F0ED',
   },
 });

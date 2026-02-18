@@ -21,6 +21,7 @@ import { GemView, RotationState } from './GemView';
 import { Gem3DErrorBoundary } from './Gem3DErrorBoundary';
 import { TierKey, TIER_PROFILES } from '../engine/tierProfiles';
 import { GemShapeKey } from './geometries';
+import type { BackgroundMode } from '../store/useGemStore';
 import { hapticSelection } from '../utils/haptics';
 
 // ─── Pure-JS quaternion math (no THREE dependency) ──────────────────────────
@@ -63,10 +64,11 @@ interface Props {
   onTap?: () => void;
   style?: ViewStyle;
   gemScale?: number;
+  backgroundMode?: BackgroundMode;
 }
 
 const GL_READY_TIMEOUT = 4000;
-const PAN_SENSITIVITY = 0.008;
+const PAN_SENSITIVITY = 0.012;
 
 // Velocity smoothing: exponential moving average
 const VELOCITY_SMOOTHING = 0.3;
@@ -115,6 +117,7 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
   onTap,
   style,
   gemScale = 1,
+  backgroundMode = 'dark',
 }) => {
   const [useFallback, setUseFallback] = useState(false);
   const [glReady, setGlReady] = useState(false);
@@ -293,6 +296,7 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
             viewHeight={viewHeight}
             rotationState={rotationRef.current}
             gemScale={gemScale}
+            backgroundMode={backgroundMode}
             paused={!appActive}
             onReady={handleGlReady}
             onError={handleGlError}

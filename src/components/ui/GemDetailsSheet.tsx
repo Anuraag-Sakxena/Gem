@@ -1,26 +1,154 @@
 /**
- * GemDetailsSheet — bottom sheet with gem details and glassmorphism.
+ * GemDetailsSheet V3 — bottom sheet with gem details, glassmorphism, and Light/Dark toggle.
+ *
+ * Changes from V2:
+ *   - Apple-style segmented Light/Dark background toggle with animated sliding indicator
+ *   - Toggle persists via Zustand store (MMKV-backed)
+ *   - Haptic feedback on toggle
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  Alert,
   Dimensions,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import Animated, { SlideInDown, SlideOutDown } from 'react-native-reanimated';
+import Animated, {
+  SlideInDown,
+  SlideOutDown,
+  FadeIn,
+  FadeOut,
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+} from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
 import { useGemStore } from '../../store/useGemStore';
+import type { BackgroundMode } from '../../store/useGemStore';
 import { TIER_PROFILES } from '../../engine/tierProfiles';
 import { maskSerial } from '../../engine/gemConfig';
 import { typography } from '../../theme/typography';
 import { spacing, palette, radii, hitSlop, borders } from '../../theme/tokens';
+import { hapticLight, hapticSelection } from '../../utils/haptics';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.6;
+
+// ─── Segmented Toggle (Apple-style) ─────────────────────────────────────────
+
+const TOGGLE_WIDTH = 200;
+const TOGGLE_HEIGHT = 34;
+const TOGGLE_PADDING = 2;
+const INDICATOR_WIDTH = (TOGGLE_WIDTH - TOGGLE_PADDING * 2) / 2;
+
+const SegmentedToggle: React.FC<{
+  value: BackgroundMode;
+  onChange: (mode: BackgroundMode) => void;
+}> = React.memo(({ value, onChange }) => {
+  const translateX = useSharedValue(value === 'light' ? 0 : INDICATOR_WIDTH);
+
+  const indicatorStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }));
+
+  const handlePress = (mode: BackgroundMode) => {
+    if (mode === value) return;
+    hapticSelection();
+    translateX.value = withSpring(mode === 'light' ? 0 : INDICATOR_WIDTH, {
+      damping: 20,
+      stiffness: 300,
+      mass: 0.8,
+    });
+    onChange(mode);
+  };
+
+  return (
+    <View style={segStyles.track}>
+      <Animated.View style={[segStyles.indicator, indicatorStyle]} />
+      <Pressable
+        onPress={() => handlePress('light')}
+        style={segStyles.segment}
+        accessible
+        accessibilityLabel="Light background"
+        accessibilityRole="button"
+      >
+        <Text style={[
+          segStyles.segmentText,
+          value === 'light' && segStyles.segmentTextActive,
+        ]}>Light</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => handlePress('dark')}
+        style={segStyles.segment}
+        accessible
+        accessibilityLabel="Dark background"
+        accessibilityRole="button"
+      >
+        <Text style={[
+          segStyles.segmentText,
+          value === 'dark' && segStyles.segmentTextActive,
+        ]}>Dark</Text>
+      </Pressable>
+    </View>
+  );
+});
+
+const segStyles = StyleSheet.create({
+  track: {
+    width: TOGGLE_WIDTH,
+    height: TOGGLE_HEIGHT,
+    borderRadius: TOGGLE_HEIGHT / 2,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: TOGGLE_PADDING,
+    position: 'relative',
+  },
+  indicator: {
+    position: 'absolute',
+    left: TOGGLE_PADDING,
+    width: INDICATOR_WIDTH,
+    height: TOGGLE_HEIGHT - TOGGLE_PADDING * 2,
+    borderRadius: (TOGGLE_HEIGHT - TOGGLE_PADDING * 2) / 2,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+  },
+  segment: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+    zIndex: 1,
+  },
+  segmentText: {
+    ...typography.labelMedium,
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 13,
+    letterSpacing: 0.5,
+  },
+  segmentTextActive: {
+    color: 'rgba(255,255,255,0.9)',
+  },
+});
+
+const SHAPE_DISPLAY: Record<string, string> = {
+  brilliant: 'Brilliant Cut',
+  princess: 'Princess Cut',
+  emerald: 'Emerald Cut',
+  cushion: 'Cushion Cut',
+  pear: 'Pear Drop',
+  marquise: 'Marquise',
+  oval: 'Oval',
+  heart: 'Heart',
+  trillion: 'Trillion',
+  hexagon: 'Hexagon',
+  prism: 'Prism',
+  shard: 'Shard',
+  kite: 'Kite',
+  star: 'Star',
+  cube: 'Cube',
+};
 
 export const GemDetailsSheet: React.FC = React.memo(() => {
   const currentTier = useGemStore((s) => s.currentTier);
@@ -28,14 +156,19 @@ export const GemDetailsSheet: React.FC = React.memo(() => {
   const gemShape = useGemStore((s) => s.gemShape);
   const showGemDetails = useGemStore((s) => s.showGemDetails);
   const toggleGemDetails = useGemStore((s) => s.toggleGemDetails);
+  const backgroundMode = useGemStore((s) => s.backgroundMode);
+  const setBackgroundMode = useGemStore((s) => s.setBackgroundMode);
+  const [shareShown, setShareShown] = useState(false);
 
   if (!showGemDetails) return null;
 
   const tierProfile = TIER_PROFILES[currentTier];
-  const shapeName = gemShape.charAt(0).toUpperCase() + gemShape.slice(1);
+  const shapeName = SHAPE_DISPLAY[gemShape] ?? gemShape;
 
   const handleShare = () => {
-    Alert.alert('Share Preview', 'Sharing will be available in a future update.');
+    hapticLight();
+    setShareShown(true);
+    setTimeout(() => setShareShown(false), 2500);
   };
 
   return (
@@ -56,6 +189,9 @@ export const GemDetailsSheet: React.FC = React.memo(() => {
           onPress={toggleGemDetails}
           hitSlop={hitSlop.md}
           style={styles.closeButton}
+          accessible
+          accessibilityLabel="Close gem details"
+          accessibilityRole="button"
         >
           <Text style={styles.closeText}>Done</Text>
         </Pressable>
@@ -66,7 +202,10 @@ export const GemDetailsSheet: React.FC = React.memo(() => {
 
           <View style={styles.detailRow}>
             <Text style={styles.detailLabel}>Tier</Text>
-            <Text style={styles.detailValue}>{tierProfile.name}</Text>
+            <View style={styles.tierValue}>
+              <View style={[styles.tierDot, { backgroundColor: tierProfile.primaryColor }]} />
+              <Text style={styles.detailValue}>{tierProfile.name}</Text>
+            </View>
           </View>
 
           <View style={styles.divider} />
@@ -94,16 +233,39 @@ export const GemDetailsSheet: React.FC = React.memo(() => {
 
           <View style={styles.divider} />
 
-          {/* Share button */}
-          <Pressable
-            onPress={handleShare}
-            style={({ pressed }) => [
-              styles.shareButton,
-              pressed && styles.shareButtonPressed,
-            ]}
-          >
-            <Text style={styles.shareButtonText}>Share Preview</Text>
-          </Pressable>
+          {/* Background mode toggle */}
+          <View style={styles.detailRow}>
+            <Text style={styles.detailLabel}>Background</Text>
+            <SegmentedToggle value={backgroundMode} onChange={setBackgroundMode} />
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* Share button / confirmation */}
+          {shareShown ? (
+            <Animated.View
+              entering={FadeIn.duration(200)}
+              exiting={FadeOut.duration(200)}
+              style={styles.shareConfirm}
+            >
+              <Text style={styles.shareConfirmText}>
+                Sharing will be available in a future update
+              </Text>
+            </Animated.View>
+          ) : (
+            <Pressable
+              onPress={handleShare}
+              style={({ pressed }) => [
+                styles.shareButton,
+                pressed && styles.shareButtonPressed,
+              ]}
+              accessible
+              accessibilityLabel="Share gem preview"
+              accessibilityRole="button"
+            >
+              <Text style={styles.shareButtonText}>Share Preview</Text>
+            </Pressable>
+          )}
         </View>
       </View>
     </Animated.View>
@@ -163,9 +325,19 @@ const styles = StyleSheet.create({
     color: palette.white,
     fontWeight: '500',
   },
+  tierValue: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  tierDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: palette.warmGray600,
+    backgroundColor: 'rgba(255,255,255,0.1)',
   },
   shareButton: {
     marginTop: spacing['2xl'],
@@ -182,5 +354,15 @@ const styles = StyleSheet.create({
   shareButtonText: {
     ...typography.labelMedium,
     color: palette.white,
+  },
+  shareConfirm: {
+    marginTop: spacing['2xl'],
+    alignSelf: 'center',
+    paddingVertical: spacing.md,
+  },
+  shareConfirmText: {
+    ...typography.caption,
+    color: palette.warmGray500,
+    textAlign: 'center',
   },
 });

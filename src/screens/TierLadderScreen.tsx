@@ -1,9 +1,12 @@
 /**
- * TierLadderScreen V3 — refined hierarchy with 3D gem previews per tier.
+ * TierLadderScreen V4 — FlatList with 3D gem previews per tier.
+ *
+ * Uses FlatList instead of ScrollView for virtualization.
+ * Removed theme prop drilling — hardcoded noir palette.
  */
 
 import React, { useCallback } from 'react';
-import { StyleSheet, Text, View, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, FlatList, ListRenderItemInfo } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/RootNavigator';
@@ -12,10 +15,9 @@ import { TierPreview } from '../gem3d';
 import { useGemStore } from '../store/useGemStore';
 import { TIER_PROFILES, TIER_ORDER, TierKey } from '../engine/tierProfiles';
 import { typography } from '../theme/typography';
-import { spacing, radii } from '../theme/tokens';
+import { spacing, radii, palette } from '../theme/tokens';
 import { hapticSuccess } from '../utils/haptics';
 import { stagger } from '../motion';
-import { AppTheme } from '../theme/themes';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'TierLadder'>;
 
@@ -24,9 +26,8 @@ const TierCard: React.FC<{
   index: number;
   isActive: boolean;
   onUnlock: (key: TierKey) => void;
-  theme: AppTheme;
   gemShape: string;
-}> = React.memo(({ tierKey, index, isActive, onUnlock, theme, gemShape }) => {
+}> = React.memo(({ tierKey, index, isActive, onUnlock, gemShape }) => {
   const tier = TIER_PROFILES[tierKey];
 
   return (
@@ -40,19 +41,23 @@ const TierCard: React.FC<{
           <View style={styles.cardInfo}>
             <View style={styles.cardTitleRow}>
               <View style={[styles.tierDot, { backgroundColor: tier.primaryColor }]} />
-              <Text style={[styles.tierName, { color: theme.textPrimary }]}>
+              <Text
+                style={styles.tierName}
+                accessible
+                accessibilityLabel={`${tier.name} tier${isActive ? ', currently active' : ''}`}
+              >
                 {tier.name}
               </Text>
-              {isActive ? (
+              {isActive && (
                 <View style={[styles.activeBadge, { backgroundColor: tier.primaryColor }]}>
-                  <Text style={styles.activeBadgeText}>ACTIVE</Text>
+                  <Text style={styles.activeBadgeText}>CURRENT</Text>
                 </View>
-              ) : null}
+              )}
             </View>
-            <Text style={[styles.tierPrice, { color: theme.textSecondary }]}>
+            <Text style={styles.tierPrice}>
               {tier.price}
             </Text>
-            <Text style={[styles.tierSupply, { color: theme.textMuted }]}>
+            <Text style={styles.tierSupply}>
               {tier.supply}
             </Text>
           </View>
@@ -63,7 +68,7 @@ const TierCard: React.FC<{
           </View>
         </View>
 
-        <Text style={[styles.tierDesc, { color: theme.textMuted }]}>
+        <Text style={styles.tierDesc}>
           {tier.description}
         </Text>
 
@@ -85,7 +90,6 @@ export const TierLadderScreen: React.FC<Props> = ({ navigation }) => {
   const currentTier = useGemStore((s) => s.currentTier);
   const setTier = useGemStore((s) => s.setTier);
   const gemShape = useGemStore((s) => s.gemShape);
-  const theme = useGemStore((s) => s.getTheme());
 
   const handleUnlock = useCallback(
     (key: TierKey) => {
@@ -95,29 +99,36 @@ export const TierLadderScreen: React.FC<Props> = ({ navigation }) => {
     [setTier],
   );
 
+  const renderItem = useCallback(
+    ({ item, index }: ListRenderItemInfo<TierKey>) => (
+      <TierCard
+        tierKey={item}
+        index={index}
+        isActive={item === currentTier}
+        onUnlock={handleUnlock}
+        gemShape={gemShape}
+      />
+    ),
+    [currentTier, handleUnlock, gemShape],
+  );
+
+  const keyExtractor = useCallback((item: TierKey) => item, []);
+
   return (
     <ScreenBackground>
       <View style={styles.container}>
         <ScreenHeader title="Tier Hierarchy" onBack={() => navigation.goBack()} />
 
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
+        <FlatList
+          data={TIER_ORDER}
+          renderItem={renderItem}
+          keyExtractor={keyExtractor}
+          contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
-        >
-          {TIER_ORDER.map((key, index) => (
-            <TierCard
-              key={key}
-              tierKey={key}
-              index={index}
-              isActive={key === currentTier}
-              onUnlock={handleUnlock}
-              theme={theme}
-              gemShape={gemShape}
-            />
-          ))}
-          <View style={{ height: spacing['4xl'] }} />
-        </ScrollView>
+          initialNumToRender={5}
+          maxToRenderPerBatch={3}
+          windowSize={7}
+        />
       </View>
     </ScreenBackground>
   );
@@ -129,8 +140,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.md,
   },
-  scroll: { flex: 1 },
-  scrollContent: { gap: spacing.md },
+  listContent: {
+    gap: spacing.md,
+    paddingBottom: spacing['4xl'],
+  },
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -150,6 +163,7 @@ const styles = StyleSheet.create({
   },
   tierName: {
     ...typography.titleLarge,
+    color: '#F2F0ED',
   },
   activeBadge: {
     paddingHorizontal: spacing.sm,
@@ -164,10 +178,12 @@ const styles = StyleSheet.create({
   },
   tierPrice: {
     ...typography.bodyMedium,
+    color: palette.warmGray400,
     marginTop: spacing.xxs,
   },
   tierSupply: {
     ...typography.caption,
+    color: palette.warmGray600,
     marginTop: spacing.xxs,
   },
   miniGem: {
@@ -178,6 +194,7 @@ const styles = StyleSheet.create({
   },
   tierDesc: {
     ...typography.bodySmall,
+    color: palette.warmGray600,
     marginTop: spacing.sm,
   },
   unlockBtn: {

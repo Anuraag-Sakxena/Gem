@@ -1,107 +1,151 @@
 /**
- * Lighting presets for gem scenes V3.
+ * Lighting presets for gem scenes V7 — Premium Studio Rig.
  *
- * One preset per theme (ivory/velvet/crystal/noir/aurora) + preview.
- * Each preset defines a 5-light rig (ambient + key + fill + rim + accent)
- * plus scene background color and glow multiplier.
+ * V6→V7: Boosted fill/ambient for dark-tier readability.
  *
- * Tuned for direct expo-gl + Three.js (no R3F, no postprocessing).
- * Higher intensities than typical — gem MUST be visible and luminous.
+ * Problem with V6: fill was 0.6, ambient was 0.15 with dark color.
+ * Dark/warm tiers (Apex, Prime) crushed to near-black under ACES Filmic
+ * because there wasn't enough fill light to reveal facets.
+ *
+ * V7 strategy — "Pinterest jeweler studio":
+ *   - Ambient raised to 0.4 with warm-gray color → lifts shadow areas
+ *   - Fill raised to 1.0 → properly opens shadow side of gem
+ *   - Rim stays strong at 2.0 → premium edge separation
+ *   - Second fill ("bounce") added from below → prevents dark underbelly
+ *   - Exposure raised to 1.35 → more headroom for ACES to work with
+ *   - Key kept at 3.0 (slightly up from 2.8) → stronger primary modeling
+ *
+ * No glow multipliers. No additive halos. Real lights, real shadows.
  */
 
-import { ThemeKey } from '../theme/themes';
+export interface StudioLight {
+  color: string;
+  intensity: number;
+  position: [number, number, number];
+}
 
-export interface LightPreset {
+export interface ShadowConfig {
+  mapSize: number;      // shadow map resolution (512 = mobile-safe)
+  bias: number;         // depth bias (prevents shadow acne)
+  normalBias: number;   // normal-based bias (prevents peter-panning)
+  radius: number;       // PCFSoft blur radius (higher = softer)
+  near: number;         // shadow camera near plane
+  far: number;          // shadow camera far plane
+  size: number;         // orthographic camera half-size
+}
+
+export interface StudioPreset {
   ambient: { color: string; intensity: number };
-  key: { color: string; intensity: number; position: [number, number, number] };
-  fill: { color: string; intensity: number; position: [number, number, number] };
-  rim: { color: string; intensity: number; position: [number, number, number] };
-  accent: { color: string; intensity: number; position: [number, number, number] };
-  /** Scene background color */
+  key: StudioLight;
+  fill: StudioLight;
+  rim: StudioLight;
+  kicker: StudioLight;
+  bounce: StudioLight;  // V7: under-fill to prevent dark underbelly
+  shadow: ShadowConfig;
   bgColor: string;
-  /** Bloom/glow intensity multiplier */
-  glowMultiplier: number;
+  exposure: number;     // tone mapping exposure
 }
 
-// ─── Presets ──────────────────────────────────────────────────────────────────
-
-/** Ivory Gallery — warm museum track lighting, golden key */
-export const IVORY_LIGHTS: LightPreset = {
-  ambient: { color: '#FFF8F0', intensity: 0.4 },
-  key:     { color: '#FFF0D8', intensity: 2.2,  position: [2.5, 4.0, 2.0] },
-  fill:    { color: '#E0E8FF', intensity: 0.7,  position: [-2.5, 1.5, 1.5] },
-  rim:     { color: '#FFF0C0', intensity: 1.2,  position: [0, 3.5, -3.5] },
-  accent:  { color: '#FFE8D0', intensity: 0.5,  position: [0.5, -1.0, 3.0] },
-  bgColor: '#0E0C08',
-  glowMultiplier: 1.1,
+/**
+ * Primary studio rig — dark stage, gem is the hero.
+ *
+ * ACES Filmic at 1.35 exposure with key=3.0 produces strong highlights
+ * that roll off smoothly. The fill at 1.0 and bounce at 0.6 ensure
+ * dark tiers (Apex, Prime) remain readable without washing out
+ * light tiers (Seed, One).
+ *
+ * The 5-light + ambient setup mimics a real jeweler's photography box:
+ *   Key = main modeling light (creates form, casts shadow)
+ *   Fill = opposite side (opens shadows, adds cool contrast)
+ *   Rim = behind (edge separation from background)
+ *   Kicker = front-low (specular sparkle on crown facets)
+ *   Bounce = below (prevents underbelly blackout)
+ */
+export const STUDIO_LIGHTS: StudioPreset = {
+  ambient: { color: '#2A2530', intensity: 0.4 },  // warm-gray ambient lift
+  key: {
+    color: '#FFF2E6',   // warm white — jeweler's main light
+    intensity: 3.0,
+    position: [3, 5, 2.5],
+  },
+  fill: {
+    color: '#D8E0F0',   // cool blue-white — contrast to warm key
+    intensity: 1.0,
+    position: [-2.5, 1.5, 3],
+  },
+  rim: {
+    color: '#FFE0C0',   // warm — edge separation from dark background
+    intensity: 2.0,
+    position: [0, 3, -4],
+  },
+  kicker: {
+    color: '#FFFFFF',   // pure white — front-low specular sparkle
+    intensity: 1.0,
+    position: [1.5, -0.3, 3],
+  },
+  bounce: {
+    color: '#F0E8E0',   // warm neutral — under-fill
+    intensity: 0.6,
+    position: [0, -2, 1],
+  },
+  shadow: {
+    mapSize: 512,       // mobile-safe resolution
+    bias: -0.002,       // tuned for gem facets
+    normalBias: 0.02,   // prevents thin-edge artifacts
+    radius: 4,          // soft shadow blur
+    near: 0.5,
+    far: 20,
+    size: 3,            // shadow camera frustum half-size
+  },
+  bgColor: '#0a0a0a',  // near-black studio void
+  exposure: 1.35,       // enough headroom for ACES to lift dark tiers
 };
 
-/** Velvet Hall — warm regal, purple/gold, dramatic */
-export const VELVET_LIGHTS: LightPreset = {
-  ambient: { color: '#1A0830', intensity: 0.15 },
-  key:     { color: '#FFD0A0', intensity: 2.0,  position: [2.5, 4.0, 2.0] },
-  fill:    { color: '#6030A0', intensity: 0.5,  position: [-3.0, 1.0, 0.5] },
-  rim:     { color: '#D4A0FF', intensity: 1.4,  position: [0, 3.0, -4.0] },
-  accent:  { color: '#8040C0', intensity: 0.5,  position: [0.5, -1.5, 2.5] },
-  bgColor: '#0D0518',
-  glowMultiplier: 1.7,
-};
-
-/** Crystal Vault — cool white glassy, bright reflections */
-export const CRYSTAL_LIGHTS: LightPreset = {
-  ambient: { color: '#D0E0F0', intensity: 0.3 },
-  key:     { color: '#F0F8FF', intensity: 2.4,  position: [2.0, 3.5, 2.0] },
-  fill:    { color: '#A0C0E0', intensity: 0.65, position: [-2.5, 1.5, 1.0] },
-  rim:     { color: '#E0F0FF', intensity: 1.3,  position: [0, 3.5, -3.5] },
-  accent:  { color: '#80B0D0', intensity: 0.5,  position: [0.5, -1.0, 3.0] },
-  bgColor: '#080C14',
-  glowMultiplier: 1.3,
-};
-
-/** Noir Chamber — dark, dramatic, single strong key + rim */
-export const NOIR_LIGHTS: LightPreset = {
-  ambient: { color: '#201818', intensity: 0.25 },
-  key:     { color: '#FFE8D0', intensity: 3.0,  position: [2.5, 5.0, 2.5] },
-  fill:    { color: '#6070B0', intensity: 0.6,  position: [-3.0, 1.0, 0.5] },
-  rim:     { color: '#FFD080', intensity: 2.2,  position: [0, 3.0, -4.0] },
-  accent:  { color: '#FFFFFF', intensity: 1.0,  position: [0, -0.5, 3.5] },
-  bgColor: '#060606',
-  glowMultiplier: 2.0,
-};
-
-/** Aurora Room — teal/blue gradient, dreamy, cosmic */
-export const AURORA_LIGHTS: LightPreset = {
-  ambient: { color: '#0A2020', intensity: 0.18 },
-  key:     { color: '#E0FFF0', intensity: 2.0,  position: [2.5, 3.5, 2.0] },
-  fill:    { color: '#206060', intensity: 0.5,  position: [-3.0, 1.0, 1.0] },
-  rim:     { color: '#60D0B0', intensity: 1.3,  position: [0, 3.0, -4.0] },
-  accent:  { color: '#40A090', intensity: 0.5,  position: [0.5, -1.5, 2.5] },
-  bgColor: '#050E14',
-  glowMultiplier: 1.5,
-};
-
-/** Minimal lighting for small previews (fewer lights, cheaper) */
-export const PREVIEW_LIGHTS: LightPreset = {
+/** Minimal lighting for small previews (cheaper, no shadows) */
+export const PREVIEW_LIGHTS: StudioPreset = {
   ambient: { color: '#FFF8F0', intensity: 0.5 },
-  key:     { color: '#FFF0E0', intensity: 1.8,  position: [2.0, 3.0, 2.0] },
-  fill:    { color: '#E0E8FF', intensity: 0.5,  position: [-2.0, 1.0, 1.0] },
-  rim:     { color: '#FFF0D0', intensity: 0.8,  position: [0, 2.5, -2.5] },
-  accent:  { color: '#FFFFFF', intensity: 0.3,  position: [0.5, -0.5, 2.0] },
+  key: {
+    color: '#FFF0E0',
+    intensity: 1.8,
+    position: [2, 3, 2],
+  },
+  fill: {
+    color: '#E0E8FF',
+    intensity: 0.6,
+    position: [-2, 1, 1],
+  },
+  rim: {
+    color: '#FFF0D0',
+    intensity: 0.8,
+    position: [0, 2.5, -2.5],
+  },
+  kicker: {
+    color: '#FFFFFF',
+    intensity: 0.3,
+    position: [0.5, -0.5, 2],
+  },
+  bounce: {
+    color: '#F0E8E0',
+    intensity: 0.3,
+    position: [0, -1.5, 1],
+  },
+  shadow: {
+    mapSize: 256,
+    bias: -0.003,
+    normalBias: 0.02,
+    radius: 2,
+    near: 0.5,
+    far: 15,
+    size: 2,
+  },
   bgColor: '#0A0A08',
-  glowMultiplier: 0.8,
+  exposure: 1.2,
 };
 
-// ─── Resolver ─────────────────────────────────────────────────────────────────
+// ── Backward-compatibility aliases ──
 
-export type ThemeLighting = ThemeKey | 'preview';
+/** @deprecated Use STUDIO_LIGHTS instead */
+export const NOIR_LIGHTS = STUDIO_LIGHTS;
 
-export function getLightPreset(theme: ThemeLighting): LightPreset {
-  switch (theme) {
-    case 'ivory':   return IVORY_LIGHTS;
-    case 'velvet':  return VELVET_LIGHTS;
-    case 'crystal': return CRYSTAL_LIGHTS;
-    case 'noir':    return NOIR_LIGHTS;
-    case 'aurora':  return AURORA_LIGHTS;
-    case 'preview': return PREVIEW_LIGHTS;
-  }
-}
+/** @deprecated Use StudioPreset instead */
+export type LightPreset = StudioPreset;

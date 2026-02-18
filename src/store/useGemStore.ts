@@ -1,22 +1,39 @@
 /**
- * Global state store V4 — Zustand with logical slices.
+ * Global state store V5 — Zustand with persistence, hydration, and toast fix.
  *
  * Slices:
- *   gem     — tier, serial, shape
+ *   gem     — tier, serial, shape (persisted via MMKV)
  *   scene   — shared renderer control (visible, interactive, mode)
- *   ui      — menu, details, demo panel, toast
- *   profile — username, vault, region
+ *   ui      — menu, details, demo panel, toast (with toastTierKey fix)
+ *   profile — username, vault, region (persisted via MMKV)
  *
- * The scene slice is the bridge between screens and the shared 3D renderer.
- * Screens set scene state; the renderer reads it.
+ * Changes from V4:
+ *   - Full persistence: tier, serial, shape, profile survive restart
+ *   - Hydration: loads persisted state synchronously before first render
+ *   - Toast race condition fix: toastTierKey tracks which tier triggered toast
+ *   - resetDemo() action for clean state reset
+ *   - getTheme() returns noir directly (no THEMES lookup)
  */
 
 import { create } from 'zustand';
 import { TierKey, TIER_PROFILES, TIER_ORDER } from '../engine/tierProfiles';
-import { AppTheme, THEMES } from '../theme/themes';
+import { NOIR_THEME } from '../theme/themes';
+import type { AppTheme } from '../theme/themes';
 import { generateSerial } from '../engine/gemConfig';
 import { devAssert } from '../utils/validation';
-import { persistShape } from '../utils/persistence';
+import {
+  persistShape,
+  persistTier,
+  persistSerial,
+  persistProfile,
+  persistBackgroundMode,
+  loadPersistedShape,
+  loadPersistedTier,
+  loadPersistedSerial,
+  loadPersistedProfile,
+  loadPersistedBackgroundMode,
+  clearAllPersistedState,
+} from '../utils/persistence';
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -43,7 +60,21 @@ export const ALL_GEM_SHAPES: GemShape[] = [
   'prism', 'shard', 'kite', 'star', 'cube',
 ];
 
+export type BackgroundMode = 'light' | 'dark';
 export type SceneMode = 'home' | 'reveal' | 'gallery' | 'hidden';
+
+// ─── Hydrate persisted state ─────────────────────────────────────────────
+
+const persistedShape = loadPersistedShape();
+const persistedTier = loadPersistedTier();
+const persistedSerial = loadPersistedSerial();
+const persistedProfile = loadPersistedProfile();
+const persistedBgMode = loadPersistedBackgroundMode();
+
+const initialTier: TierKey = persistedTier ?? 'seed';
+const initialSerial: string = persistedSerial ?? generateSerial(TIER_ORDER.indexOf(initialTier));
+const initialShape: GemShape = persistedShape ?? 'brilliant';
+const initialBackgroundMode: BackgroundMode = persistedBgMode ?? 'dark';
 
 // ─── Slice: Gem ─────────────────────────────────────────────────────────
 
@@ -52,9 +83,11 @@ interface GemSlice {
   readonly previousTier: TierKey | null;
   readonly serial: string;
   readonly gemShape: GemShape;
+  readonly backgroundMode: BackgroundMode;
   readonly hasRevealedOnce: boolean;
   setTier: (tier: TierKey) => void;
   setGemShape: (shape: GemShape) => void;
+  setBackgroundMode: (mode: BackgroundMode) => void;
   markRevealed: () => void;
 }
 
@@ -73,6 +106,7 @@ interface SceneSlice {
 
 interface UISlice {
   readonly showUpgradeToast: boolean;
+  readonly toastTierKey: TierKey | null;
   readonly showDemoPanel: boolean;
   readonly showMenu: boolean;
   readonly showGemDetails: boolean;
@@ -108,16 +142,25 @@ interface ThemeAccessor {
   getTheme: () => AppTheme;
 }
 
+// ─── App control ─────────────────────────────────────────────────────────
+
+interface AppControl {
+  resetDemo: () => void;
+}
+
 // ─── Combined Store ─────────────────────────────────────────────────────
 
-type GemStore = GemSlice & SceneSlice & UISlice & ProfileSlice & ThemeAccessor;
+type GemStore = GemSlice & SceneSlice & UISlice & ProfileSlice & ThemeAccessor & AppControl;
+
+// ─── Noir theme constant (imported directly) ──────────────────────────────
 
 export const useGemStore = create<GemStore>((set, get) => ({
   // ── Gem Slice ──
-  currentTier: 'seed',
+  currentTier: initialTier,
   previousTier: null,
-  serial: generateSerial(0),
-  gemShape: 'brilliant',
+  serial: initialSerial,
+  gemShape: initialShape,
+  backgroundMode: initialBackgroundMode,
   hasRevealedOnce: false,
 
   setTier: (tier: TierKey) => {
@@ -125,17 +168,26 @@ export const useGemStore = create<GemStore>((set, get) => ({
     const currentTier = get().currentTier;
     if (tier === currentTier) return;
     const index = TIER_ORDER.indexOf(tier);
+    const serial = generateSerial(index);
     set({
       currentTier: tier,
       previousTier: currentTier,
-      serial: generateSerial(index),
+      serial,
       showUpgradeToast: true,
+      toastTierKey: tier,
     });
+    persistTier(tier);
+    persistSerial(serial);
   },
 
   setGemShape: (shape: GemShape) => {
     set({ gemShape: shape });
     persistShape(shape);
+  },
+
+  setBackgroundMode: (mode: BackgroundMode) => {
+    set({ backgroundMode: mode });
+    persistBackgroundMode(mode);
   },
 
   markRevealed: () => set({ hasRevealedOnce: true }),
@@ -149,13 +201,14 @@ export const useGemStore = create<GemStore>((set, get) => ({
   setSceneVisible: (visible: boolean) => set({ sceneVisible: visible }),
   setSceneInteractive: (interactive: boolean) => set({ sceneInteractive: interactive }),
 
-  // ── UI Slice ──
+  // ── UI Slice (with toast race condition fix) ──
   showUpgradeToast: false,
+  toastTierKey: null,
   showDemoPanel: false,
   showMenu: false,
   showGemDetails: false,
 
-  dismissUpgradeToast: () => set({ showUpgradeToast: false }),
+  dismissUpgradeToast: () => set({ showUpgradeToast: false, toastTierKey: null }),
 
   toggleDemoPanel: () =>
     set((state) => ({ showDemoPanel: !state.showDemoPanel })),
@@ -166,26 +219,30 @@ export const useGemStore = create<GemStore>((set, get) => ({
   toggleGemDetails: () =>
     set((state) => ({ showGemDetails: !state.showGemDetails })),
 
-  // ── Profile Slice ──
+  // ── Profile Slice (persisted) ──
   profile: {
-    username: 'Anonymous Holder',
-    isPublic: false,
-    region: 'Global',
-    holderSince: 'Jan 2025',
+    username: persistedProfile.username ?? 'Anonymous Holder',
+    isPublic: persistedProfile.isPublic ?? false,
+    region: persistedProfile.region ?? 'Global',
+    holderSince: persistedProfile.holderSince ?? 'Jan 2025',
   },
   vaultEnabled: false,
   vaultPasscode: '1234',
   vaultLocked: false,
 
   updateProfile: (updates: Partial<ProfileState>) =>
-    set((state) => ({
-      profile: { ...state.profile, ...updates },
-    })),
+    set((state) => {
+      const updated = { ...state.profile, ...updates };
+      persistProfile(updated);
+      return { profile: updated };
+    }),
 
   togglePublicProfile: () =>
-    set((state) => ({
-      profile: { ...state.profile, isPublic: !state.profile.isPublic },
-    })),
+    set((state) => {
+      const updated = { ...state.profile, isPublic: !state.profile.isPublic };
+      persistProfile(updated);
+      return { profile: updated };
+    }),
 
   toggleVault: () =>
     set((state) => ({
@@ -196,5 +253,35 @@ export const useGemStore = create<GemStore>((set, get) => ({
   setVaultLocked: (locked: boolean) => set({ vaultLocked: locked }),
 
   // ── Theme (noir only — no switching) ──
-  getTheme: () => THEMES.noir,
+  getTheme: () => NOIR_THEME,
+
+  // ── App Control ──
+  resetDemo: () => {
+    clearAllPersistedState();
+    set({
+      currentTier: 'seed',
+      previousTier: null,
+      serial: generateSerial(0),
+      gemShape: 'brilliant',
+      backgroundMode: 'dark',
+      hasRevealedOnce: false,
+      sceneMode: 'home',
+      sceneVisible: true,
+      sceneInteractive: true,
+      showUpgradeToast: false,
+      toastTierKey: null,
+      showDemoPanel: false,
+      showMenu: false,
+      showGemDetails: false,
+      profile: {
+        username: 'Anonymous Holder',
+        isPublic: false,
+        region: 'Global',
+        holderSince: 'Jan 2025',
+      },
+      vaultEnabled: false,
+      vaultPasscode: '1234',
+      vaultLocked: false,
+    });
+  },
 }));

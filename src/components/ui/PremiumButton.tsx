@@ -1,9 +1,14 @@
 /**
- * PremiumButton V2 — tactile button with spring scale, haptics, tokens.
+ * PremiumButton V3 — tactile button with spring scale, haptics, loading state.
+ *
+ * Changes from V2:
+ *   - Loading state variant (ActivityIndicator for async actions)
+ *   - Disabled state fully prevents tap (not just visual opacity)
+ *   - Removed theme prop drilling — hardcoded noir palette
  */
 
 import React from 'react';
-import { StyleSheet, Text, ViewStyle, TextStyle } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, ViewStyle, TextStyle } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -13,8 +18,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { hapticLight } from '../../utils/haptics';
 import { spring } from '../../motion';
 import { typography } from '../../theme/typography';
-import { radii, spacing, opacity as opacityTokens } from '../../theme/tokens';
-import { useGemStore } from '../../store/useGemStore';
+import { radii, spacing, palette, opacity as opacityTokens } from '../../theme/tokens';
 
 interface Props {
   title: string;
@@ -24,6 +28,7 @@ interface Props {
   style?: ViewStyle;
   textStyle?: TextStyle;
   disabled?: boolean;
+  loading?: boolean;
   fullWidth?: boolean;
 }
 
@@ -36,10 +41,11 @@ export const PremiumButton: React.FC<Props> = React.memo(
     style,
     textStyle,
     disabled,
+    loading,
     fullWidth,
   }) => {
-    const theme = useGemStore((s) => s.getTheme());
     const scale = useSharedValue(1);
+    const isDisabled = disabled || loading;
 
     const animatedStyle = useAnimatedStyle(() => ({
       transform: [{ scale: scale.value }],
@@ -47,13 +53,15 @@ export const PremiumButton: React.FC<Props> = React.memo(
 
     const tapGesture = Gesture.Tap()
       .onBegin(() => {
-        scale.value = withSpring(0.96, spring.snappy);
+        if (!isDisabled) {
+          scale.value = withSpring(0.96, spring.snappy);
+        }
       })
       .onFinalize(() => {
         scale.value = withSpring(1, spring.snappy);
       })
       .onEnd(() => {
-        if (!disabled) {
+        if (!isDisabled) {
           hapticLight();
           onPress();
         }
@@ -61,7 +69,7 @@ export const PremiumButton: React.FC<Props> = React.memo(
       .runOnJS(true);
 
     const sizeConfig = SIZE_MAP[size];
-    const colors = getColors(variant, theme);
+    const colors = getColors(variant);
 
     return (
       <GestureDetector gesture={tapGesture}>
@@ -70,7 +78,7 @@ export const PremiumButton: React.FC<Props> = React.memo(
             styles.container,
             sizeConfig.container,
             {
-              opacity: disabled ? opacityTokens.disabled : opacityTokens.full,
+              opacity: isDisabled ? opacityTokens.disabled : opacityTokens.full,
               backgroundColor: colors.bg,
               borderWidth: variant === 'ghost' ? 1 : 0,
               borderColor: colors.border,
@@ -79,28 +87,40 @@ export const PremiumButton: React.FC<Props> = React.memo(
             animatedStyle,
             style,
           ]}
+          accessible
+          accessibilityLabel={loading ? `${title}, loading` : title}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: isDisabled }}
         >
-          <Text
-            style={[styles.text, sizeConfig.text, { color: colors.text }, textStyle]}
-          >
-            {title}
-          </Text>
+          {loading ? (
+            <ActivityIndicator
+              size="small"
+              color={colors.text}
+              style={sizeConfig.text}
+            />
+          ) : (
+            <Text
+              style={[styles.text, sizeConfig.text, { color: colors.text }, textStyle]}
+            >
+              {title}
+            </Text>
+          )}
         </Animated.View>
       </GestureDetector>
     );
   },
 );
 
-const getColors = (variant: string, theme: ReturnType<typeof useGemStore.getState>['getTheme'] extends () => infer R ? R : never) => {
+const getColors = (variant: string) => {
   switch (variant) {
     case 'secondary':
-      return { bg: theme.cardBackground, text: theme.textPrimary, border: theme.cardBorder };
+      return { bg: 'rgba(255,255,255,0.06)', text: '#F2F0ED', border: 'rgba(255,255,255,0.08)' };
     case 'ghost':
-      return { bg: 'transparent', text: theme.textSecondary, border: theme.cardBorder };
+      return { bg: 'transparent', text: palette.warmGray400, border: 'rgba(255,255,255,0.08)' };
     case 'accent':
-      return { bg: theme.accent, text: theme.buttonText, border: theme.accent };
+      return { bg: palette.gold400, text: '#0A0A09', border: palette.gold400 };
     default:
-      return { bg: theme.buttonBackground, text: theme.buttonText, border: theme.buttonBackground };
+      return { bg: '#F2F0ED', text: '#0A0A09', border: '#F2F0ED' };
   }
 };
 
