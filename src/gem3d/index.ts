@@ -16,3 +16,7 @@ export type { BackgroundQuad } from './backgroundQuad';
 export { fitCameraToObject } from './fitCamera';
 export { getShapeProfile, SHAPE_PROFILES } from './shapeProfiles';
 export type { ShapeProfile } from './shapeProfiles';
+export { LUXURY_SPECS } from './luxurySpecs';
+export type { LuxurySpec } from './luxurySpecs';
+export { applyEngravingShader, createEngravingTargets } from './engravingShader';
+export type { EngravingUniforms, EngravingTargets } from './engravingShader';

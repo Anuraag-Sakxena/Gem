@@ -1,27 +1,18 @@
 /**
- * GemView V15 — Light/Dark Background Modes + Scene Re-Lighting Animation.
+ * GemView V16 — Luxury Engravings + Light/Dark Modes + Scene Re-Lighting.
  *
- * V14→V15 changes:
- *   - ADDED:   backgroundMode prop ('light' | 'dark') with smooth animated transition
- *   - ADDED:   Scene re-lighting system — when switching modes, the ENTIRE studio
- *              re-lights: background, exposure, ambient, hemisphere, fill, contact shadow
- *              all animate together on a single timeline for a premium "cinematic" feel
- *   - ADDED:   Light mode scene values: brighter exposure, warm pearl ambient, softer
- *              vignette, reduced contact shadow for pearl backgrounds
- *   - CHANGED: Background quad now takes mode parameter for auto-contrast
- *   - KEPT:    Everything else — full lighting rig, PMREM, material lerping, rotation
+ * V15→V16 changes:
+ *   - ADDED:   Procedural engraving system via onBeforeCompile shader injection.
+ *              Gold filigree, emerald inlays, platinum accents, sapphire micro-inlays
+ *              all computed procedurally in object-space — no UVs needed.
+ *   - ADDED:   Engraving uniforms lerped alongside material properties for smooth
+ *              tier transitions (same LERP_SPEED = 0.06).
+ *   - ADDED:   Time-based subtle shimmer on engravings (very subtle, premium feel).
+ *   - KEPT:    Everything from V15 — background modes, scene re-lighting, full
+ *              lighting rig, PMREM, material lerping, rotation, diagnostics.
  *
- * The transition approach:
- *   When the user toggles Light <-> Dark, we DON'T just swap colors. Instead,
- *   we smoothly animate EVERY scene parameter in the rAF loop (exposure, ambient
- *   intensity/color, hemisphere sky/ground colors, fill intensity, contact shadow
- *   opacity, background quad gradient). This creates the feel of the whole studio
- *   being re-lit — like a photographer switching from a dark void backdrop to a
- *   pearl sweep. The lerp speed is intentionally slower than material changes
- *   (0.035 vs 0.06) so it feels deliberate and cinematic.
- *
- * Philosophy: Studio product photography. Premium, buttery, Apple-level transitions.
- * No flickers, no sudden jumps, no frame drops.
+ * Philosophy: Studio product photography. Royal, rich, elegant, very precious.
+ * Premium, buttery, Apple-level transitions. No flickers, no sudden jumps.
  */
 
 import React, { useRef, useEffect, useCallback } from 'react';
@@ -39,6 +30,13 @@ import { fitCameraToObject } from './fitCamera';
 import { getShapeProfile } from './shapeProfiles';
 import { TierKey } from '../engine/tierProfiles';
 import type { BackgroundMode } from '../store/useGemStore';
+import { LUXURY_SPECS } from './luxurySpecs';
+import {
+  applyEngravingShader,
+  createEngravingTargets,
+  type EngravingUniforms,
+  type EngravingTargets,
+} from './engravingShader';
 
 // ─── Pre-allocated temp objects (zero GC in render loop) ────────────────────
 
@@ -203,6 +201,10 @@ export const GemView: React.FC<Props> = React.memo(({
   const targetMatRef = useRef<ReturnType<typeof safeMaterial> | null>(null);
   const isLerpingRef = useRef(false);
 
+  // Engraving system refs (luxury engravings via shader injection)
+  const engravingUniformsRef = useRef<EngravingUniforms | null>(null);
+  const targetEngravingRef = useRef<EngravingTargets | null>(null);
+
   // Scene re-lighting targets (for mode transition animation)
   const sceneTargetsRef = useRef<SceneTargets>(getSceneTargets(backgroundMode));
   const isSceneLerpingRef = useRef(false);
@@ -227,6 +229,9 @@ export const GemView: React.FC<Props> = React.memo(({
     targetAttenuationColorRef.current.set(mat.attenuationColor);
     targetMatRef.current = mat;
     isLerpingRef.current = true;
+
+    // Set engraving targets for the new tier (lerped in animation loop)
+    targetEngravingRef.current = createEngravingTargets(LUXURY_SPECS[tierKey]);
 
     // Update background auto-contrast for the new tier (with current mode)
     if (bgQuadRef.current) {
@@ -420,6 +425,11 @@ export const GemView: React.FC<Props> = React.memo(({
       });
       materialRef.current = material;
 
+      // ─ Luxury Engravings (shader injection — BEFORE first render) ─
+      const luxSpec = LUXURY_SPECS[tierKeyRef.current];
+      const engravingUniforms = applyEngravingShader(material, luxSpec);
+      engravingUniformsRef.current = engravingUniforms;
+
       // ─ Gem Mesh ─
       const outerScale = gemScaleRef.current * shapeProfile.baseScale;
       const geometry = createGemGeometry(shapeRef.current, outerScale);
@@ -462,6 +472,11 @@ export const GemView: React.FC<Props> = React.memo(({
         const t = clock.getElapsedTime();
         const rs = rotationState;
 
+        // Update engraving time uniform (for subtle shimmer animation)
+        if (engravingUniformsRef.current) {
+          engravingUniformsRef.current.uEngravingTime.value = t;
+        }
+
         // ── Material interpolation (smooth tier transitions) ──
         if (isLerpingRef.current && targetMatRef.current && materialRef.current) {
           const m = materialRef.current;
@@ -483,6 +498,21 @@ export const GemView: React.FC<Props> = React.memo(({
           m.attenuationDistance += (target.attenuationDistance - m.attenuationDistance) * spd;
           m.specularIntensity += (target.specularIntensity - m.specularIntensity) * spd;
 
+          // Lerp engraving uniforms alongside material properties
+          if (engravingUniformsRef.current && targetEngravingRef.current) {
+            const eu = engravingUniformsRef.current;
+            const te = targetEngravingRef.current;
+            eu.uEngravingIntensity.value += (te.intensity - eu.uEngravingIntensity.value) * spd;
+            eu.uPatternDensity.value += (te.density - eu.uPatternDensity.value) * spd;
+            eu.uInlayColor1.value.lerp(te.color1, spd);
+            eu.uInlayColor2.value.lerp(te.color2, spd);
+            eu.uInlayBlend.value += (te.blend - eu.uInlayBlend.value) * spd;
+            eu.uNormalDepth.value += (te.normalDepth - eu.uNormalDepth.value) * spd;
+            eu.uInlayMetalness.value += (te.metalness - eu.uInlayMetalness.value) * spd;
+            eu.uInlayRoughness.value += (te.roughness - eu.uInlayRoughness.value) * spd;
+            eu.uEmissiveBoost.value += (te.emissive - eu.uEmissiveBoost.value) * spd;
+          }
+
           if (Math.abs(m.metalness - target.metalness) < 0.003) {
             m.color.copy(targetColorRef.current);
             m.emissive.copy(targetEmissiveRef.current);
@@ -498,6 +528,23 @@ export const GemView: React.FC<Props> = React.memo(({
             m.attenuationColor.copy(targetAttenuationColorRef.current);
             m.attenuationDistance = target.attenuationDistance;
             m.specularIntensity = target.specularIntensity;
+
+            // Snap engraving uniforms to targets
+            if (engravingUniformsRef.current && targetEngravingRef.current) {
+              const eu = engravingUniformsRef.current;
+              const te = targetEngravingRef.current;
+              eu.uEngravingIntensity.value = te.intensity;
+              eu.uPatternDensity.value = te.density;
+              eu.uInlayColor1.value.copy(te.color1);
+              eu.uInlayColor2.value.copy(te.color2);
+              eu.uInlayBlend.value = te.blend;
+              eu.uNormalDepth.value = te.normalDepth;
+              eu.uInlayMetalness.value = te.metalness;
+              eu.uInlayRoughness.value = te.roughness;
+              eu.uEmissiveBoost.value = te.emissive;
+              targetEngravingRef.current = null;
+            }
+
             isLerpingRef.current = false;
             targetMatRef.current = null;
           }

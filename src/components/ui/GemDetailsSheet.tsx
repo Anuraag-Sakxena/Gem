@@ -1,5 +1,8 @@
 /**
- * GemDetailsSheet V3 — bottom sheet with gem details, glassmorphism, and Light/Dark toggle.
+ * GemDetailsSheet V4 — bottom sheet with gem details, luxury labels, and Light/Dark toggle.
+ *
+ * Changes from V3:
+ *   - Added engraving and inlay labels from luxury specs (per-tier)
  *
  * Changes from V2:
  *   - Apple-style segmented Light/Dark background toggle with animated sliding indicator
@@ -28,6 +31,7 @@ import { BlurView } from 'expo-blur';
 import { useGemStore } from '../../store/useGemStore';
 import type { BackgroundMode } from '../../store/useGemStore';
 import { TIER_PROFILES } from '../../engine/tierProfiles';
+import { LUXURY_SPECS } from '../../gem3d/luxurySpecs';
 import { maskSerial } from '../../engine/gemConfig';
 import { typography } from '../../theme/typography';
 import { spacing, palette, radii, hitSlop, borders } from '../../theme/tokens';
@@ -163,6 +167,7 @@ export const GemDetailsSheet: React.FC = React.memo(() => {
   if (!showGemDetails) return null;
 
   const tierProfile = TIER_PROFILES[currentTier];
+  const luxurySpec = LUXURY_SPECS[currentTier];
   const shapeName = SHAPE_DISPLAY[gemShape] ?? gemShape;
 
   const handleShare = () => {
@@ -232,6 +237,26 @@ export const GemDetailsSheet: React.FC = React.memo(() => {
           </View>
 
           <View style={styles.divider} />
+
+          {luxurySpec.engravingLabel !== 'None' && (
+            <>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Engraving</Text>
+                <Text style={styles.detailValue}>{luxurySpec.engravingLabel}</Text>
+              </View>
+              <View style={styles.divider} />
+            </>
+          )}
+
+          {luxurySpec.inlayLabel !== 'None' && (
+            <>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Inlay</Text>
+                <Text style={styles.detailValue}>{luxurySpec.inlayLabel}</Text>
+              </View>
+              <View style={styles.divider} />
+            </>
+          )}
 
           {/* Background mode toggle */}
           <View style={styles.detailRow}>
