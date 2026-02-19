@@ -17,40 +17,13 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { View, StyleSheet, ViewStyle, Text, AppState, AppStateStatus, LayoutChangeEvent } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { GemView, RotationState } from './GemView';
+import { useSharedValue } from 'react-native-reanimated';
+import { GemView, RotationState, GestureInput } from './GemView';
 import { Gem3DErrorBoundary } from './Gem3DErrorBoundary';
 import { TierKey, TIER_PROFILES } from '../engine/tierProfiles';
 import { GemShapeKey } from './geometries';
 import type { BackgroundMode } from '../store/useGemStore';
 import { hapticSelection } from '../utils/haptics';
-
-// ─── Pure-JS quaternion math (no THREE dependency) ──────────────────────────
-
-/** Multiply two quaternions: result = a * b */
-function qMul(
-  ax: number, ay: number, az: number, aw: number,
-  bx: number, by: number, bz: number, bw: number,
-): { x: number; y: number; z: number; w: number } {
-  return {
-    x: aw * bx + ax * bw + ay * bz - az * by,
-    y: aw * by - ax * bz + ay * bw + az * bx,
-    z: aw * bz + ax * by - ay * bx + az * bw,
-    w: aw * bw - ax * bx - ay * by - az * bz,
-  };
-}
-
-/** Create quaternion from axis-angle rotation */
-function qFromAxisAngle(ax: number, ay: number, az: number, angle: number) {
-  const ha = angle * 0.5;
-  const s = Math.sin(ha);
-  return { x: ax * s, y: ay * s, z: az * s, w: Math.cos(ha) };
-}
-
-/** Normalize a quaternion to unit length */
-function qNormalize(x: number, y: number, z: number, w: number) {
-  const len = Math.sqrt(x * x + y * y + z * z + w * w) || 1;
-  return { x: x / len, y: y / len, z: z / len, w: w / len };
-}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -68,15 +41,6 @@ interface Props {
 }
 
 const GL_READY_TIMEOUT = 4000;
-const PAN_SENSITIVITY = 0.012;
-
-// Velocity smoothing: exponential moving average
-const VELOCITY_SMOOTHING = 0.3;
-const VELOCITY_SCALE_X = 0.00006;
-const VELOCITY_SCALE_Y = 0.00005;
-
-// Auto-rotate resume delay after user interaction
-const AUTO_ROTATE_RESUME_DELAY = 800;        // ms
 
 // Initial slight downward tilt (0.15 rad around X axis)
 // qFromAxisAngle(1, 0, 0, 0.15) pre-computed:
@@ -151,10 +115,19 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
     autoRotatePaused: false,
     lastInteractionTime: 0,
   });
-  const prevTranslation = useRef({ x: 0, y: 0 });
-  // Smoothed velocity accumulators
-  const smoothVx = useRef(0);
-  const smoothVy = useRef(0);
+  // Gesture input via Reanimated shared values — worklet-safe, never serializes rotationRef
+  const gDragging = useSharedValue(false);
+  const gTransX = useSharedValue(0);
+  const gTransY = useSharedValue(0);
+  const gVelX = useSharedValue(0);
+  const gVelY = useSharedValue(0);
+  const gestureInputRef = useRef<GestureInput>({
+    dragging: gDragging,
+    transX: gTransX,
+    transY: gTransY,
+    velX: gVelX,
+    velY: gVelY,
+  });
 
   // ── AppState lifecycle (pause when backgrounded) ──
   useEffect(() => {
@@ -203,74 +176,29 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
     lastFrameRef.current = Date.now();
   }, []);
 
-  // ── Gestures — quaternion-based 360° rotation ──
-  // CRITICAL: .runOnJS(true) required — callbacks use qFromAxisAngle/qMul/qNormalize
-  // (regular JS functions) and React refs, which cannot run in worklet context.
+  // ── Gestures — pure worklet handlers write to shared values only ──
+  // CRITICAL: rotationRef is NEVER captured in gesture closures.
+  // All quaternion math happens in GemView's animation loop (JS thread, rAF).
   const panGesture = Gesture.Pan()
     .enabled(interactive)
-    .runOnJS(true)
     .onBegin(() => {
-      const rs = rotationRef.current;
-      rs.isDragging = true;
-      rs.autoRotatePaused = true;
-      rs.vx = 0;
-      rs.vy = 0;
-      smoothVx.current = 0;
-      smoothVy.current = 0;
-      prevTranslation.current = { x: 0, y: 0 };
+      'worklet';
+      gDragging.value = true;
+      gTransX.value = 0;
+      gTransY.value = 0;
+      gVelX.value = 0;
+      gVelY.value = 0;
     })
     .onUpdate((e) => {
-      const dx = e.translationX - prevTranslation.current.x;
-      const dy = e.translationY - prevTranslation.current.y;
-      prevTranslation.current = { x: e.translationX, y: e.translationY };
-
-      const rs = rotationRef.current;
-
-      // Build incremental rotation quaternions from gesture delta
-      // Pure quaternion — no pitch limits, true 360° tumble
-      const qY = qFromAxisAngle(0, 1, 0, dx * PAN_SENSITIVITY);
-      const qX = qFromAxisAngle(1, 0, 0, dy * PAN_SENSITIVITY);
-
-      // Apply: current = qY * qX * current
-      let result = qMul(
-        qX.x, qX.y, qX.z, qX.w,
-        rs.qx, rs.qy, rs.qz, rs.qw,
-      );
-      result = qMul(
-        qY.x, qY.y, qY.z, qY.w,
-        result.x, result.y, result.z, result.w,
-      );
-
-      // Normalize to prevent drift
-      const norm = qNormalize(result.x, result.y, result.z, result.w);
-      rs.qx = norm.x;
-      rs.qy = norm.y;
-      rs.qz = norm.z;
-      rs.qw = norm.w;
-
-      // Smooth velocity capture via exponential moving average
-      const rawVy = e.velocityX * VELOCITY_SCALE_X;
-      const rawVx = e.velocityY * VELOCITY_SCALE_Y;
-      smoothVx.current = smoothVx.current * (1 - VELOCITY_SMOOTHING) + rawVx * VELOCITY_SMOOTHING;
-      smoothVy.current = smoothVy.current * (1 - VELOCITY_SMOOTHING) + rawVy * VELOCITY_SMOOTHING;
+      'worklet';
+      gTransX.value = e.translationX;
+      gTransY.value = e.translationY;
+      gVelX.value = e.velocityX;
+      gVelY.value = e.velocityY;
     })
     .onEnd(() => {
-      const rs = rotationRef.current;
-      rs.isDragging = false;
-      rs.lastInteractionTime = Date.now();
-
-      // Transfer smoothed velocity for inertia
-      rs.vx = smoothVx.current;
-      rs.vy = smoothVy.current;
-
-      // Cap velocity magnitude for sanity
-      const maxV = 0.04;
-      const vMag = Math.sqrt(rs.vx * rs.vx + rs.vy * rs.vy);
-      if (vMag > maxV) {
-        const scale = maxV / vMag;
-        rs.vx *= scale;
-        rs.vy *= scale;
-      }
+      'worklet';
+      gDragging.value = false;
     });
 
   const tapGesture = Gesture.Tap()
@@ -321,6 +249,7 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
             viewWidth={layoutSize?.w ?? displayW}
             viewHeight={layoutSize?.h ?? displayH}
             rotationState={rotationRef.current}
+            gestureInput={gestureInputRef.current}
             gemScale={gemScale}
             backgroundMode={backgroundMode}
             paused={!appActive}

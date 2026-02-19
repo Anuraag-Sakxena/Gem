@@ -17,6 +17,7 @@
 
 import React, { useRef, useEffect, useCallback } from 'react';
 import { View, StyleSheet } from 'react-native';
+import type { SharedValue } from 'react-native-reanimated';
 import { GLView } from 'expo-gl';
 import type { ExpoWebGLRenderingContext } from 'expo-gl';
 import * as THREE from 'three';
@@ -56,6 +57,15 @@ export interface RotationState {
   lastInteractionTime: number;
 }
 
+/** Gesture input via Reanimated shared values (worklet → JS thread bridge) */
+export interface GestureInput {
+  dragging: SharedValue<boolean>;
+  transX: SharedValue<number>;
+  transY: SharedValue<number>;
+  velX: SharedValue<number>;
+  velY: SharedValue<number>;
+}
+
 // ─── Tuning Constants ───────────────────────────────────────────────────────
 
 const LERP_SPEED = 0.06;           // material transition speed
@@ -73,6 +83,13 @@ const FPS_THRESHOLD_UP = 55;
 
 // Smooth camera transition on shape change
 const CAMERA_LERP_SPEED = 0.045;
+
+// Gesture processing (moved from GemRenderer3D — runs in animation loop on JS thread)
+const PAN_SENSITIVITY = 0.012;
+const VELOCITY_SMOOTHING = 0.3;
+const VELOCITY_SCALE_X = 0.00006;
+const VELOCITY_SCALE_Y = 0.00005;
+const MAX_FLING_VELOCITY = 0.04;
 
 // ─── Scene Lighting Targets for Light & Dark Modes ──────────────────────────
 
@@ -122,6 +139,7 @@ interface Props {
   viewWidth?: number;
   viewHeight?: number;
   rotationState: RotationState;
+  gestureInput?: GestureInput;
   gemScale?: number;
   autoRotate?: boolean;
   enableFloat?: boolean;
@@ -192,6 +210,7 @@ export const GemView: React.FC<Props> = React.memo(({
   viewWidth,
   viewHeight,
   rotationState,
+  gestureInput,
   gemScale = 1,
   autoRotate = true,
   enableFloat = true,
@@ -550,6 +569,13 @@ export const GemView: React.FC<Props> = React.memo(({
       let lastDbW = gl.drawingBufferWidth;
       let lastDbH = gl.drawingBufferHeight;
 
+      // Gesture processing state (reads shared values → computes quaternion deltas)
+      let prevGestureX = 0;
+      let prevGestureY = 0;
+      let wasDragging = false;
+      let smoothVxLocal = 0;
+      let smoothVyLocal = 0;
+
       const animate = () => {
         animFrameRef.current = requestAnimationFrame(animate);
 
@@ -691,7 +717,57 @@ export const GemView: React.FC<Props> = React.memo(({
           }
         }
 
-        // ── Quaternion rotation ──
+        // ── Process gesture input (reads shared values from UI thread) ──
+        if (gestureInput) {
+          const nowDragging = gestureInput.dragging.value;
+          if (nowDragging && !wasDragging) {
+            rs.isDragging = true;
+            rs.autoRotatePaused = true;
+            rs.vx = 0;
+            rs.vy = 0;
+            smoothVxLocal = 0;
+            smoothVyLocal = 0;
+            prevGestureX = gestureInput.transX.value;
+            prevGestureY = gestureInput.transY.value;
+          } else if (nowDragging) {
+            const curX = gestureInput.transX.value;
+            const curY = gestureInput.transY.value;
+            const dx = curX - prevGestureX;
+            const dy = curY - prevGestureY;
+            prevGestureX = curX;
+            prevGestureY = curY;
+
+            _q1.set(rs.qx, rs.qy, rs.qz, rs.qw);
+            _q2.setFromAxisAngle(_axisY, dx * PAN_SENSITIVITY);
+            _q1.premultiply(_q2);
+            _q2.setFromAxisAngle(_axisX, dy * PAN_SENSITIVITY);
+            _q1.premultiply(_q2);
+            _q1.normalize();
+            rs.qx = _q1.x;
+            rs.qy = _q1.y;
+            rs.qz = _q1.z;
+            rs.qw = _q1.w;
+
+            const rawVy = gestureInput.velX.value * VELOCITY_SCALE_X;
+            const rawVx = gestureInput.velY.value * VELOCITY_SCALE_Y;
+            smoothVxLocal = smoothVxLocal * (1 - VELOCITY_SMOOTHING) + rawVx * VELOCITY_SMOOTHING;
+            smoothVyLocal = smoothVyLocal * (1 - VELOCITY_SMOOTHING) + rawVy * VELOCITY_SMOOTHING;
+          } else if (!nowDragging && wasDragging) {
+            rs.isDragging = false;
+            rs.lastInteractionTime = Date.now();
+            rs.vx = smoothVxLocal;
+            rs.vy = smoothVyLocal;
+            const vMag = Math.sqrt(rs.vx * rs.vx + rs.vy * rs.vy);
+            if (vMag > MAX_FLING_VELOCITY) {
+              const scale = MAX_FLING_VELOCITY / vMag;
+              rs.vx *= scale;
+              rs.vy *= scale;
+            }
+          }
+          wasDragging = nowDragging;
+        }
+
+        // ── Quaternion rotation (auto-rotate + inertia, only when not dragging) ──
         _q1.set(rs.qx, rs.qy, rs.qz, rs.qw);
 
         if (!rs.isDragging) {
@@ -871,11 +947,60 @@ export const GemView: React.FC<Props> = React.memo(({
 
         const safeClock = new THREE.Clock();
         safeClock.start();
+        let safePrevGX = 0;
+        let safePrevGY = 0;
+        let safeWasDragging = false;
+        let safeSmoothVx = 0;
+        let safeSmoothVy = 0;
         const safeAnimate = () => {
           animFrameRef.current = requestAnimationFrame(safeAnimate);
           if (pausedRef.current) return;
 
           const rs = rotationState;
+
+          // ── Process gesture input (safe mode) ──
+          if (gestureInput) {
+            const nowDragging = gestureInput.dragging.value;
+            if (nowDragging && !safeWasDragging) {
+              rs.isDragging = true;
+              rs.autoRotatePaused = true;
+              rs.vx = 0; rs.vy = 0;
+              safeSmoothVx = 0; safeSmoothVy = 0;
+              safePrevGX = gestureInput.transX.value;
+              safePrevGY = gestureInput.transY.value;
+            } else if (nowDragging) {
+              const curX = gestureInput.transX.value;
+              const curY = gestureInput.transY.value;
+              const dx = curX - safePrevGX;
+              const dy = curY - safePrevGY;
+              safePrevGX = curX;
+              safePrevGY = curY;
+              _q1.set(rs.qx, rs.qy, rs.qz, rs.qw);
+              _q2.setFromAxisAngle(_axisY, dx * PAN_SENSITIVITY);
+              _q1.premultiply(_q2);
+              _q2.setFromAxisAngle(_axisX, dy * PAN_SENSITIVITY);
+              _q1.premultiply(_q2);
+              _q1.normalize();
+              rs.qx = _q1.x; rs.qy = _q1.y;
+              rs.qz = _q1.z; rs.qw = _q1.w;
+              const rawVy = gestureInput.velX.value * VELOCITY_SCALE_X;
+              const rawVx = gestureInput.velY.value * VELOCITY_SCALE_Y;
+              safeSmoothVx = safeSmoothVx * (1 - VELOCITY_SMOOTHING) + rawVx * VELOCITY_SMOOTHING;
+              safeSmoothVy = safeSmoothVy * (1 - VELOCITY_SMOOTHING) + rawVy * VELOCITY_SMOOTHING;
+            } else if (!nowDragging && safeWasDragging) {
+              rs.isDragging = false;
+              rs.lastInteractionTime = Date.now();
+              rs.vx = safeSmoothVx;
+              rs.vy = safeSmoothVy;
+              const vMag = Math.sqrt(rs.vx * rs.vx + rs.vy * rs.vy);
+              if (vMag > MAX_FLING_VELOCITY) {
+                const scale = MAX_FLING_VELOCITY / vMag;
+                rs.vx *= scale; rs.vy *= scale;
+              }
+            }
+            safeWasDragging = nowDragging;
+          }
+
           _q1.set(rs.qx, rs.qy, rs.qz, rs.qw);
           if (!rs.isDragging) {
             const timeSinceInteraction = Date.now() - rs.lastInteractionTime;
