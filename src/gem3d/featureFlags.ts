@@ -36,4 +36,10 @@ export const GEM_FLAGS = {
 
   /** Gaussian shadow falloff at 128px resolution */
   enhancedShadow: true,
+
+  /** SSAA anti-aliasing (render at 1.25x, downsample — eliminates facet shimmer) */
+  ssaaEnabled: true,
+
+  /** Chromatic dispersion (rainbow fire through gem body — real diamond physics) */
+  gemDispersion: true,
 } as const;

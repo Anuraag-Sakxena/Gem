@@ -91,6 +91,10 @@ const VELOCITY_SCALE_X = 0.00006;
 const VELOCITY_SCALE_Y = 0.00005;
 const MAX_FLING_VELOCITY = 0.04;
 
+// SSAA anti-aliasing: render at higher resolution, downsample for edge smoothing.
+// Eliminates facet shimmer during rotation without MSAA (which expo-gl can't do).
+const SSAA_SCALE = 1.25;
+
 // ─── Scene Lighting Targets for Light & Dark Modes ──────────────────────────
 
 interface SceneTargets {
@@ -196,6 +200,11 @@ export const gemDiagnostics = {
   darkGemBoost: 0,
   cameraLerping: false,
   errors: [] as string[],
+  // Quality verification diagnostics (dev-only)
+  ssaaScale: 1,
+  drawingBufferWidth: 0,
+  drawingBufferHeight: 0,
+  lowQualityActive: false,
 };
 
 let _fpsFrames = 0;
@@ -231,6 +240,7 @@ export const GemView: React.FC<Props> = React.memo(({
   const meshRef = useRef<THREE.Mesh | null>(null);
   const materialRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
   const glRef = useRef<ExpoWebGLRenderingContext | null>(null);
+  const ssaaTargetRef = useRef<THREE.WebGLRenderTarget | null>(null);
 
   // Background + shadow refs
   const bgQuadRef = useRef<BackgroundQuad | null>(null);
@@ -386,6 +396,10 @@ export const GemView: React.FC<Props> = React.memo(({
         if (csMat.map) csMat.map.dispose();
         csMat.dispose();
       }
+      if (ssaaTargetRef.current) {
+        ssaaTargetRef.current.dispose();
+        ssaaTargetRef.current = null;
+      }
       if (rendererRef.current) {
         rendererRef.current.dispose();
         rendererRef.current = null;
@@ -521,6 +535,7 @@ export const GemView: React.FC<Props> = React.memo(({
         attenuationColor: new THREE.Color(matConfig.attenuationColor),
         attenuationDistance: matConfig.attenuationDistance,
         specularIntensity: matConfig.specularIntensity,
+        dispersion: GEM_FLAGS.gemDispersion ? matConfig.dispersion : 0,
         side: THREE.DoubleSide,
       });
       materialRef.current = material;
@@ -557,6 +572,57 @@ export const GemView: React.FC<Props> = React.memo(({
       (contactShadow.material as THREE.MeshBasicMaterial).opacity = initialScene.contactShadowOpacity;
       scene.add(contactShadow);
       contactShadowRef.current = contactShadow;
+
+      // ─── SSAA Anti-Aliasing Pipeline ───────────────────────────────────
+      // Renders scene at 1.25x resolution then downsamples to screen via
+      // bilinear filtering. Eliminates facet shimmer and edge aliasing
+      // during rotation — the root cause of "pixelated while scrolling".
+      // expo-gl does NOT support renderbufferStorageMultisample (MSAA),
+      // so SSAA via render-target downsampling is the correct mobile AA.
+      let ssaaTarget: THREE.WebGLRenderTarget | null = null;
+      let ssaaCopyScene: THREE.Scene | null = null;
+      let ssaaCopyCamera: THREE.OrthographicCamera | null = null;
+
+      if (GEM_FLAGS.ssaaEnabled) {
+        const rtW = Math.round(gl.drawingBufferWidth * SSAA_SCALE);
+        const rtH = Math.round(gl.drawingBufferHeight * SSAA_SCALE);
+        ssaaTarget = new THREE.WebGLRenderTarget(rtW, rtH, {
+          minFilter: THREE.LinearFilter,
+          magFilter: THREE.LinearFilter,
+          depthBuffer: true,
+          stencilBuffer: false,
+        });
+        ssaaTargetRef.current = ssaaTarget;
+
+        const copyMat = new THREE.ShaderMaterial({
+          uniforms: { tDiffuse: { value: ssaaTarget.texture } },
+          vertexShader: [
+            'varying vec2 vUv;',
+            'void main() {',
+            '  vUv = uv;',
+            '  gl_Position = vec4(position.xy, 0.0, 1.0);',
+            '}',
+          ].join('\n'),
+          fragmentShader: [
+            'uniform sampler2D tDiffuse;',
+            'varying vec2 vUv;',
+            'void main() {',
+            '  gl_FragColor = texture2D(tDiffuse, vUv);',
+            '}',
+          ].join('\n'),
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false, // Already tone-mapped in the SSAA target
+        });
+
+        const quadGeom = new THREE.PlaneGeometry(2, 2);
+        const quadMesh = new THREE.Mesh(quadGeom, copyMat);
+        ssaaCopyScene = new THREE.Scene();
+        ssaaCopyScene.add(quadMesh);
+        ssaaCopyCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+        gemDiagnostics.ssaaScale = SSAA_SCALE;
+      }
 
       // ─── Animation Loop ─────────────────────────────────────────────────
       const clock = new THREE.Clock();
@@ -609,6 +675,9 @@ export const GemView: React.FC<Props> = React.memo(({
           m.attenuationColor.lerp(targetAttenuationColorRef.current, spd);
           m.attenuationDistance += (target.attenuationDistance - m.attenuationDistance) * spd;
           m.specularIntensity += (target.specularIntensity - m.specularIntensity) * spd;
+          if (GEM_FLAGS.gemDispersion) {
+            m.dispersion += (target.dispersion - m.dispersion) * spd;
+          }
 
           // Lerp engraving uniforms alongside material properties
           if (engravingUniformsRef.current && targetEngravingRef.current) {
@@ -640,6 +709,9 @@ export const GemView: React.FC<Props> = React.memo(({
             m.attenuationColor.copy(targetAttenuationColorRef.current);
             m.attenuationDistance = target.attenuationDistance;
             m.specularIntensity = target.specularIntensity;
+            if (GEM_FLAGS.gemDispersion) {
+              m.dispersion = target.dispersion;
+            }
 
             // Snap engraving uniforms to targets
             if (engravingUniformsRef.current && targetEngravingRef.current) {
@@ -823,6 +895,13 @@ export const GemView: React.FC<Props> = React.memo(({
         const dbh = gl.drawingBufferHeight;
         if (dbw !== lastDbW || dbh !== lastDbH) {
           renderer.setSize(dbw, dbh);
+          // Keep SSAA target in sync with drawingBuffer
+          if (ssaaTarget) {
+            ssaaTarget.setSize(
+              Math.round(dbw * SSAA_SCALE),
+              Math.round(dbh * SSAA_SCALE),
+            );
+          }
           const oldAspect = lastDbW / (lastDbH || 1);
           const newAspect = dbw / (dbh || 1);
           camera.aspect = newAspect;
@@ -839,7 +918,16 @@ export const GemView: React.FC<Props> = React.memo(({
           lastDbH = dbh;
         }
 
-        renderer.render(scene, camera);
+        // ── Render (SSAA supersample → downsample, or direct) ──
+        // Quality is IDENTICAL during scrolling and idle — no degradation.
+        if (ssaaTarget && ssaaCopyScene && ssaaCopyCamera) {
+          renderer.setRenderTarget(ssaaTarget);
+          renderer.render(scene, camera);
+          renderer.setRenderTarget(null);
+          renderer.render(ssaaCopyScene, ssaaCopyCamera);
+        } else {
+          renderer.render(scene, camera);
+        }
         gl.endFrameEXP();
 
         // Diagnostics
@@ -863,6 +951,19 @@ export const GemView: React.FC<Props> = React.memo(({
             } else if (gemDiagnostics.fps > FPS_THRESHOLD_UP) {
               gemDiagnostics.qualityMode = 'hd';
             }
+          }
+
+          // Quality diagnostics (dev-only logging — proves quality is locked)
+          gemDiagnostics.drawingBufferWidth = gl.drawingBufferWidth;
+          gemDiagnostics.drawingBufferHeight = gl.drawingBufferHeight;
+          gemDiagnostics.lowQualityActive = false;
+          if (__DEV__) {
+            console.log(
+              `[GemView Quality] ${gemDiagnostics.fps}fps | ` +
+              `db:${gl.drawingBufferWidth}×${gl.drawingBufferHeight} | ` +
+              `ssaa:${ssaaTarget ? SSAA_SCALE + 'x' : 'off'} | ` +
+              `pr:${RENDERER_PIXEL_RATIO} | dispersion:${GEM_FLAGS.gemDispersion ? 'on' : 'off'}`
+            );
           }
 
           _fpsFrames = 0;

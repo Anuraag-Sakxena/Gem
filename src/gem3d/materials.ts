@@ -48,6 +48,8 @@ export interface GemMaterialConfig {
   attenuationColor: string;
   attenuationDistance: number;
   specularIntensity: number;
+  /** Chromatic dispersion — rainbow fire through gem body (0 = none, 0.3 = diamond) */
+  dispersion: number;
   // Kept for backward compatibility (tier importance metric)
   glowIntensity: number;
   glowColor: string;
@@ -70,6 +72,7 @@ export function safeMaterial(mat: GemMaterialConfig): GemMaterialConfig {
     thickness: Math.max(0.1, Math.min(3.0, mat.thickness)),
     attenuationDistance: Math.max(0.5, mat.attenuationDistance),
     specularIntensity: Math.max(0.5, Math.min(2.0, mat.specularIntensity)),
+    dispersion: Math.max(0, Math.min(0.5, mat.dispersion)),
     glowIntensity: Math.max(0.1, mat.glowIntensity),
   };
 }
@@ -94,6 +97,7 @@ export const TIER_MATERIALS: Record<TierKey, GemMaterialConfig> = {
     attenuationColor: '#E8E8F0',
     attenuationDistance: 5.0,
     specularIntensity: 0.8,
+    dispersion: 0.01,
     glowIntensity: 0.15,
     glowColor: '#FFFFFF',
   },
@@ -116,6 +120,7 @@ export const TIER_MATERIALS: Record<TierKey, GemMaterialConfig> = {
     attenuationColor: '#98C8E8',
     attenuationDistance: 3.5,
     specularIntensity: 0.9,
+    dispersion: 0.03,
     glowIntensity: 0.25,
     glowColor: '#A8D8EA',
   },
@@ -138,6 +143,7 @@ export const TIER_MATERIALS: Record<TierKey, GemMaterialConfig> = {
     attenuationColor: '#B080D0',
     attenuationDistance: 3.0,
     specularIntensity: 1.0,
+    dispersion: 0.06,
     glowIntensity: 0.35,
     glowColor: '#B39DDB',
   },
@@ -160,6 +166,7 @@ export const TIER_MATERIALS: Record<TierKey, GemMaterialConfig> = {
     attenuationColor: '#E0B030',
     attenuationDistance: 2.8,
     specularIntensity: 1.0,
+    dispersion: 0.08,
     glowIntensity: 0.45,
     glowColor: '#FFD54F',
   },
@@ -182,6 +189,7 @@ export const TIER_MATERIALS: Record<TierKey, GemMaterialConfig> = {
     attenuationColor: '#D040B0',
     attenuationDistance: 2.5,
     specularIntensity: 1.1,
+    dispersion: 0.12,
     glowIntensity: 0.55,
     glowColor: '#E040FB',
   },
@@ -204,6 +212,7 @@ export const TIER_MATERIALS: Record<TierKey, GemMaterialConfig> = {
     attenuationColor: '#20B0D0',
     attenuationDistance: 2.5,
     specularIntensity: 1.2,
+    dispersion: 0.15,
     glowIntensity: 0.65,
     glowColor: '#00E5FF',
   },
@@ -227,6 +236,7 @@ export const TIER_MATERIALS: Record<TierKey, GemMaterialConfig> = {
     attenuationColor: '#E08020',
     attenuationDistance: 2.2,
     specularIntensity: 1.3,
+    dispersion: 0.20,
     glowIntensity: 0.75,
     glowColor: '#FF6D00',
   },
@@ -255,6 +265,7 @@ export const TIER_MATERIALS: Record<TierKey, GemMaterialConfig> = {
     attenuationColor: '#F0C840',
     attenuationDistance: 3.0,
     specularIntensity: 1.4,
+    dispersion: 0.25,
     glowIntensity: 0.85,
     glowColor: '#FFD700',
   },
@@ -278,6 +289,7 @@ export const TIER_MATERIALS: Record<TierKey, GemMaterialConfig> = {
     attenuationColor: '#FFFFFF',
     attenuationDistance: 100, // effectively infinite — no absorption
     specularIntensity: 1.5,
+    dispersion: 0.30,
     glowIntensity: 1.0,
     glowColor: '#FFFFFF',
   },
