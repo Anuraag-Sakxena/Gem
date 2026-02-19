@@ -203,9 +203,12 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
     lastFrameRef.current = Date.now();
   }, []);
 
-  // ── Gestures — quaternion-based 360° rotation with soft pitch clamp ──
+  // ── Gestures — quaternion-based 360° rotation ──
+  // CRITICAL: .runOnJS(true) required — callbacks use qFromAxisAngle/qMul/qNormalize
+  // (regular JS functions) and React refs, which cannot run in worklet context.
   const panGesture = Gesture.Pan()
     .enabled(interactive)
+    .runOnJS(true)
     .onBegin(() => {
       const rs = rotationRef.current;
       rs.isDragging = true;
@@ -272,6 +275,7 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
 
   const tapGesture = Gesture.Tap()
     .enabled(!!onTap)
+    .runOnJS(true)
     .onEnd(() => {
       if (onTap) {
         hapticSelection();

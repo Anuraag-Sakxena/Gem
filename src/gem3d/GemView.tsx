@@ -395,6 +395,9 @@ export const GemView: React.FC<Props> = React.memo(({
         } as unknown as HTMLCanvasElement,
         context: gl as unknown as WebGLRenderingContext,
         alpha: false,
+        antialias: false,   // CRITICAL: expo-gl doesn't implement renderbufferStorageMultisample
+        stencil: false,
+        powerPreference: 'high-performance',
       });
       renderer.setSize(gl.drawingBufferWidth, gl.drawingBufferHeight);
       renderer.setPixelRatio(RENDERER_PIXEL_RATIO);
@@ -817,6 +820,9 @@ export const GemView: React.FC<Props> = React.memo(({
           } as unknown as HTMLCanvasElement,
           context: gl as unknown as WebGLRenderingContext,
           alpha: false,
+          antialias: false,
+          stencil: false,
+          powerPreference: 'high-performance',
         });
         safeRenderer.setSize(gl.drawingBufferWidth, gl.drawingBufferHeight);
         safeRenderer.setPixelRatio(RENDERER_PIXEL_RATIO);
@@ -924,6 +930,7 @@ export const GemView: React.FC<Props> = React.memo(({
       <GLView
         style={{ width: w, height: h }}
         onContextCreate={onContextCreate}
+        msaaSamples={0}
       />
     </View>
   );
