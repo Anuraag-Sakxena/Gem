@@ -48,7 +48,9 @@ export const FullscreenMenu: React.FC<Props> = React.memo(({ navigation }) => {
     hapticLight();
     toggleMenu();
     if (item.action === 'toggleDemoPanel') {
-      toggleDemoPanel();
+      // Delay: let menu exit animation (200ms) finish before opening panel,
+      // otherwise the menu overlay (z-1000) blocks the panel (z-900).
+      setTimeout(toggleDemoPanel, 300);
     } else if (item.route) {
       navigation.navigate(item.route);
     }

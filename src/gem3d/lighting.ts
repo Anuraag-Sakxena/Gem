@@ -62,30 +62,30 @@ export interface StudioPreset {
  *   Bounce = below (prevents underbelly blackout)
  */
 export const STUDIO_LIGHTS: StudioPreset = {
-  ambient: { color: '#2A2530', intensity: 0.4 },  // warm-gray ambient lift
+  ambient: { color: '#403848', intensity: 0.6 },  // warm-gray ambient — lifted for richness
   key: {
-    color: '#FFF2E6',   // warm white — jeweler's main light
-    intensity: 3.0,
+    color: '#FFF4E8',   // warm white — jeweler's main light (brighter)
+    intensity: 4.5,
     position: [3, 5, 2.5],
   },
   fill: {
-    color: '#D8E0F0',   // cool blue-white — contrast to warm key
-    intensity: 1.0,
+    color: '#D8E4FF',   // cool blue-white — stronger for visible gem body
+    intensity: 1.8,
     position: [-2.5, 1.5, 3],
   },
   rim: {
-    color: '#FFE0C0',   // warm — edge separation from dark background
-    intensity: 2.0,
+    color: '#FFE0C0',   // warm — stronger edge glow for premium separation
+    intensity: 3.2,
     position: [0, 3, -4],
   },
   kicker: {
-    color: '#FFFFFF',   // pure white — front-low specular sparkle
-    intensity: 1.0,
+    color: '#FFFFFF',   // pure white — doubled for sparkle fire
+    intensity: 2.0,
     position: [1.5, -0.3, 3],
   },
   bounce: {
-    color: '#F0E8E0',   // warm neutral — under-fill
-    intensity: 0.6,
+    color: '#FFF0E8',   // warm neutral — strong under-fill, no dark underbelly
+    intensity: 1.2,
     position: [0, -2, 1],
   },
   shadow: {
@@ -98,7 +98,7 @@ export const STUDIO_LIGHTS: StudioPreset = {
     size: 3,            // shadow camera frustum half-size
   },
   bgColor: '#0a0a0a',  // near-black studio void
-  exposure: 1.35,       // enough headroom for ACES to lift dark tiers
+  exposure: 1.85,       // significantly boosted for vivid ACES Filmic output
 };
 
 /** Minimal lighting for small previews (cheaper, no shadows) */

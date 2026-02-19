@@ -250,7 +250,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.md,
     paddingBottom: spacing['4xl'],
-    maxHeight: '70%',
+    maxHeight: '88%',
   },
   handle: {
     width: 36,

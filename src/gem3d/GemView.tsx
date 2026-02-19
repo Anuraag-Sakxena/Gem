@@ -29,6 +29,7 @@ import { createContactShadow } from './shadowCatcher';
 import { createBackgroundQuad, BackgroundQuad } from './backgroundQuad';
 import { fitCameraToObject } from './fitCamera';
 import { getShapeProfile } from './shapeProfiles';
+import { createArcCoreMaterial } from './ArcCoreShader';
 import { TierKey } from '../engine/tierProfiles';
 import type { BackgroundMode } from '../store/useGemStore';
 import { GEM_FLAGS } from './featureFlags';
@@ -93,7 +94,7 @@ const MAX_FLING_VELOCITY = 0.04;
 
 // SSAA anti-aliasing: render at higher resolution, downsample for edge smoothing.
 // Eliminates facet shimmer during rotation without MSAA (which expo-gl can't do).
-const SSAA_SCALE = 1.25;
+const SSAA_SCALE = 1.5;
 
 // ─── Scene Lighting Targets for Light & Dark Modes ──────────────────────────
 
@@ -109,25 +110,25 @@ interface SceneTargets {
 }
 
 const DARK_SCENE: SceneTargets = {
-  exposure: 1.35,
-  ambientIntensity: 0.4,
-  ambientColor: new THREE.Color('#2A2530'),
-  hemiSkyColor: new THREE.Color('#2A2530'),
-  hemiGroundColor: new THREE.Color('#181515'),
-  hemiIntensity: 0.35,
-  fillIntensity: 1.0,
-  contactShadowOpacity: 0.3,
+  exposure: 1.85,
+  ambientIntensity: 0.6,
+  ambientColor: new THREE.Color('#403848'),
+  hemiSkyColor: new THREE.Color('#403848'),
+  hemiGroundColor: new THREE.Color('#201820'),
+  hemiIntensity: 0.5,
+  fillIntensity: 1.8,
+  contactShadowOpacity: 0.35,
 };
 
 const LIGHT_SCENE: SceneTargets = {
-  exposure: 1.55,
-  ambientIntensity: 0.5,
-  ambientColor: new THREE.Color('#C8BEB0'),
-  hemiSkyColor: new THREE.Color('#E8E4DE'),
-  hemiGroundColor: new THREE.Color('#C8C2BA'),
-  hemiIntensity: 0.45,
-  fillIntensity: 1.2,
-  contactShadowOpacity: 0.12,
+  exposure: 2.1,
+  ambientIntensity: 0.65,
+  ambientColor: new THREE.Color('#D0C8B8'),
+  hemiSkyColor: new THREE.Color('#F0E8E0'),
+  hemiGroundColor: new THREE.Color('#D0C8C0'),
+  hemiIntensity: 0.55,
+  fillIntensity: 2.0,
+  contactShadowOpacity: 0.15,
 };
 
 function getSceneTargets(mode: BackgroundMode): SceneTargets {
@@ -246,6 +247,12 @@ export const GemView: React.FC<Props> = React.memo(({
   const bgQuadRef = useRef<BackgroundQuad | null>(null);
   const contactShadowRef = useRef<THREE.Mesh | null>(null);
 
+  // Aura glow + ground light pool refs
+  const auraMeshRef = useRef<THREE.Mesh | null>(null);
+  const auraMatRef = useRef<THREE.ShaderMaterial | null>(null);
+  const groundPoolRef = useRef<THREE.Mesh | null>(null);
+  const groundPoolMatRef = useRef<THREE.ShaderMaterial | null>(null);
+
   // Scene light refs (needed for re-lighting animation)
   const ambientLightRef = useRef<THREE.AmbientLight | null>(null);
   const hemiLightRef = useRef<THREE.HemisphereLight | null>(null);
@@ -308,6 +315,18 @@ export const GemView: React.FC<Props> = React.memo(({
 
     // Set engraving targets for the new tier (lerped in animation loop)
     targetEngravingRef.current = createEngravingTargets(LUXURY_SPECS[tierKey]);
+
+    // Update aura glow color and intensity for new tier
+    if (auraMatRef.current) {
+      auraMatRef.current.uniforms.uColor.value.set(mat.glowColor);
+      auraMatRef.current.uniforms.uIntensity.value = mat.glowIntensity;
+    }
+
+    // Update ground light pool color for new tier
+    if (groundPoolMatRef.current) {
+      groundPoolMatRef.current.uniforms.uColor.value.set(mat.glowColor);
+      groundPoolMatRef.current.uniforms.uIntensity.value = mat.glowIntensity * 0.6;
+    }
 
     // Update background auto-contrast and tier-aware lighting for the new tier
     if (bgQuadRef.current) {
@@ -395,6 +414,14 @@ export const GemView: React.FC<Props> = React.memo(({
         const csMat = contactShadowRef.current.material as THREE.MeshBasicMaterial;
         if (csMat.map) csMat.map.dispose();
         csMat.dispose();
+      }
+      if (auraMeshRef.current) {
+        auraMeshRef.current.geometry.dispose();
+        (auraMeshRef.current.material as THREE.Material).dispose();
+      }
+      if (groundPoolRef.current) {
+        groundPoolRef.current.geometry.dispose();
+        (groundPoolRef.current.material as THREE.Material).dispose();
       }
       if (ssaaTargetRef.current) {
         ssaaTargetRef.current.dispose();
@@ -573,6 +600,58 @@ export const GemView: React.FC<Props> = React.memo(({
       scene.add(contactShadow);
       contactShadowRef.current = contactShadow;
 
+      // ─ Aura Glow Sphere (inner light — makes the gem feel ALIVE) ─
+      // A slightly smaller sphere inside the gem, rendered with AdditiveBlending.
+      // Uses the ArcCore shader for pulsing, organic inner glow.
+      const auraMat = createArcCoreMaterial(matConfig.glowColor, matConfig.glowIntensity);
+      const auraGeo = new THREE.SphereGeometry(outerScale * 0.55, 24, 24);
+      const auraMesh = new THREE.Mesh(auraGeo, auraMat);
+      auraMesh.renderOrder = 1; // render before gem (inside)
+      scene.add(auraMesh);
+      auraMeshRef.current = auraMesh;
+      auraMatRef.current = auraMat;
+
+      // ─ Ground Light Pool (tier-colored radiance beneath gem) ─
+      // A flat circle below the gem that glows with the tier's color.
+      // Gives the gem a "floating on light" presence — like a spotlight pedestal.
+      const poolGeo = new THREE.CircleGeometry(1.5, 32);
+      const poolMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uColor: { value: new THREE.Color(matConfig.glowColor) },
+          uIntensity: { value: matConfig.glowIntensity * 0.6 },
+        },
+        vertexShader: [
+          'varying vec2 vUv;',
+          'void main() {',
+          '  vUv = uv;',
+          '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+          '}',
+        ].join('\n'),
+        fragmentShader: [
+          'uniform vec3 uColor;',
+          'uniform float uIntensity;',
+          'varying vec2 vUv;',
+          'void main() {',
+          '  float dist = length(vUv - 0.5) * 2.0;',
+          '  float falloff = 1.0 - dist * dist;',
+          '  falloff = max(falloff, 0.0);',
+          '  falloff = pow(falloff, 2.5);',
+          '  gl_FragColor = vec4(uColor * uIntensity * falloff, falloff * 0.8);',
+          '}',
+        ].join('\n'),
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const poolMesh = new THREE.Mesh(poolGeo, poolMat);
+      poolMesh.rotation.x = -Math.PI / 2;
+      poolMesh.position.y = -1.25;
+      poolMesh.renderOrder = 0;
+      scene.add(poolMesh);
+      groundPoolRef.current = poolMesh;
+      groundPoolMatRef.current = poolMat;
+
       // ─── SSAA Anti-Aliasing Pipeline ───────────────────────────────────
       // Renders scene at 1.25x resolution then downsamples to screen via
       // bilinear filtering. Eliminates facet shimmer and edge aliasing
@@ -653,6 +732,17 @@ export const GemView: React.FC<Props> = React.memo(({
         // Update engraving time uniform (for subtle shimmer animation)
         if (engravingUniformsRef.current) {
           engravingUniformsRef.current.uEngravingTime.value = t;
+        }
+
+        // Update aura glow animation
+        if (auraMatRef.current) {
+          auraMatRef.current.uniforms.uTime.value = t;
+        }
+
+        // Sync aura mesh position with gem float
+        if (auraMeshRef.current && meshRef.current) {
+          auraMeshRef.current.position.copy(meshRef.current.position);
+          auraMeshRef.current.quaternion.copy(meshRef.current.quaternion);
         }
 
         // ── Material interpolation (smooth tier transitions) ──
