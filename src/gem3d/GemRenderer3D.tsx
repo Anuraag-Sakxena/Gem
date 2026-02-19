@@ -14,7 +14,7 @@
  */
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ViewStyle, Text, AppState, AppStateStatus } from 'react-native';
+import { View, StyleSheet, ViewStyle, Text, AppState, AppStateStatus, LayoutChangeEvent } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { GemView, RotationState } from './GemView';
@@ -125,6 +125,22 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastFrameRef = useRef(0);
 
+  // Measured layout for robust size tracking (navigation transitions, rotation)
+  const [layoutSize, setLayoutSize] = useState<{ w: number; h: number } | null>(null);
+  const layoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width: lw, height: lh } = e.nativeEvent.layout;
+    if (layoutTimerRef.current) clearTimeout(layoutTimerRef.current);
+    layoutTimerRef.current = setTimeout(() => {
+      setLayoutSize((prev) => {
+        // Skip if unchanged (within 2px tolerance)
+        if (prev && Math.abs(prev.w - lw) < 2 && Math.abs(prev.h - lh) < 2) return prev;
+        return { w: Math.round(lw), h: Math.round(lh) };
+      });
+    }, 150); // 150ms debounce — settles after navigation transition
+  }, []);
+
   const displayW = viewWidth ?? size;
   const displayH = viewHeight ?? size;
 
@@ -146,7 +162,10 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
       setAppActive(state === 'active');
     };
     const sub = AppState.addEventListener('change', handler);
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+      if (layoutTimerRef.current) clearTimeout(layoutTimerRef.current);
+    };
   }, []);
 
   // ── GL readiness timeout ──
@@ -287,13 +306,16 @@ export const GemRenderer3D: React.FC<Props> = React.memo(({
       interactive={interactive}
     >
       <GestureDetector gesture={composed}>
-        <View style={[styles.container, { width: displayW, height: displayH }, style]}>
+        <View
+          style={[styles.container, { width: displayW, height: displayH }, style]}
+          onLayout={handleLayout}
+        >
           <GemView
             tierKey={tierKey}
             shape={shape}
             size={size}
-            viewWidth={viewWidth}
-            viewHeight={viewHeight}
+            viewWidth={layoutSize?.w ?? displayW}
+            viewHeight={layoutSize?.h ?? displayH}
             rotationState={rotationRef.current}
             gemScale={gemScale}
             backgroundMode={backgroundMode}

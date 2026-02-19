@@ -30,6 +30,7 @@ import { fitCameraToObject } from './fitCamera';
 import { getShapeProfile } from './shapeProfiles';
 import { TierKey } from '../engine/tierProfiles';
 import type { BackgroundMode } from '../store/useGemStore';
+import { GEM_FLAGS } from './featureFlags';
 import { LUXURY_SPECS } from './luxurySpecs';
 import {
   applyEngravingShader,
@@ -65,6 +66,13 @@ const AUTO_ROTATE_RESUME_DELAY = 800;
 
 // expo-gl drawingBuffer already includes device pixel ratio — always use 1 here
 const RENDERER_PIXEL_RATIO = 1;
+
+// Adaptive quality thresholds (diagnostics only — expo-gl pixel ratio is fixed)
+const FPS_THRESHOLD_DOWN = 45;
+const FPS_THRESHOLD_UP = 55;
+
+// Smooth camera transition on shape change
+const CAMERA_LERP_SPEED = 0.045;
 
 // ─── Scene Lighting Targets for Light & Dark Modes ──────────────────────────
 
@@ -124,6 +132,37 @@ interface Props {
   onFrame?: () => void;
 }
 
+// ─── Tier-Aware Lighting Helpers ────────────────────────────────────────────
+
+/**
+ * Dark gem fill boost: prevents dark-colored gems from collapsing into
+ * dark backgrounds. Returns a fill light multiplier (1.0 = no boost).
+ */
+function computeDarkGemFillBoost(tierKey: TierKey): number {
+  if (!GEM_FLAGS.darkGemFillBoost) return 1.0;
+  const mat = TIER_MATERIALS[tierKey];
+  const c = new THREE.Color(mat.color);
+  const L = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  // Dark gems (L < 0.5) get stronger fill; max 1.3x at L=0
+  return L < 0.5 ? 1.0 + (0.5 - L) * 0.6 : 1.0;
+}
+
+/**
+ * Light gem exposure clamp: prevents bright gems from washing out
+ * in light mode. Returns the adjusted exposure value.
+ */
+function computeLightModeExposure(tierKey: TierKey, base: number): number {
+  if (!GEM_FLAGS.lightGemExposureClamp) return base;
+  const mat = TIER_MATERIALS[tierKey];
+  const c = new THREE.Color(mat.color);
+  const L = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  // Bright gems (L > 0.7) get slightly lower exposure (max -0.09)
+  // Dark gems (L < 0.3) get slightly higher exposure (max +0.045)
+  if (L > 0.7) return base - (L - 0.7) * 0.3;
+  if (L < 0.3) return base + (0.3 - L) * 0.15;
+  return base;
+}
+
 /** Global diagnostics — read by DiagnosticsScreen */
 export const gemDiagnostics = {
   glReady: false,
@@ -134,6 +173,10 @@ export const gemDiagnostics = {
   triangles: 0,
   rendererInfo: '',
   safeMode: false,
+  pixelRatio: 1,
+  qualityMode: 'standard' as 'standard' | 'hd',
+  darkGemBoost: 0,
+  cameraLerping: false,
   errors: [] as string[],
 };
 
@@ -209,6 +252,10 @@ export const GemView: React.FC<Props> = React.memo(({
   const sceneTargetsRef = useRef<SceneTargets>(getSceneTargets(backgroundMode));
   const isSceneLerpingRef = useRef(false);
 
+  // Smooth camera lerp targets (shape change)
+  const cameraTargetZ = useRef<number | null>(null);
+  const cameraTargetY = useRef<number | null>(null);
+
   // Keep prop refs current
   useEffect(() => { tierKeyRef.current = tierKey; }, [tierKey]);
   useEffect(() => { shapeRef.current = shape; }, [shape]);
@@ -233,11 +280,24 @@ export const GemView: React.FC<Props> = React.memo(({
     // Set engraving targets for the new tier (lerped in animation loop)
     targetEngravingRef.current = createEngravingTargets(LUXURY_SPECS[tierKey]);
 
-    // Update background auto-contrast for the new tier (with current mode)
+    // Update background auto-contrast and tier-aware lighting for the new tier
     if (bgQuadRef.current) {
       bgQuadRef.current.setTargetColors(tierKey, backgroundModeRef.current);
-      isSceneLerpingRef.current = true;
     }
+
+    // Recompute tier-aware scene targets
+    const mode = backgroundModeRef.current;
+    const baseTargets = getSceneTargets(mode);
+    const tierAwareTargets = { ...baseTargets };
+    if (mode === 'dark') {
+      tierAwareTargets.fillIntensity = baseTargets.fillIntensity * computeDarkGemFillBoost(tierKey);
+      gemDiagnostics.darkGemBoost = tierAwareTargets.fillIntensity - baseTargets.fillIntensity;
+    } else {
+      tierAwareTargets.exposure = computeLightModeExposure(tierKey, baseTargets.exposure);
+      gemDiagnostics.darkGemBoost = 0;
+    }
+    sceneTargetsRef.current = tierAwareTargets;
+    isSceneLerpingRef.current = true;
   }, [tierKey]);
 
   // ── Background mode change → scene re-lighting ──
@@ -245,8 +305,17 @@ export const GemView: React.FC<Props> = React.memo(({
     backgroundModeRef.current = backgroundMode;
     if (!rendererRef.current) return;
 
-    // Set new scene lighting targets
-    sceneTargetsRef.current = getSceneTargets(backgroundMode);
+    // Set new scene lighting targets (with tier-aware adjustments)
+    const baseTargets = getSceneTargets(backgroundMode);
+    const tierAwareTargets = { ...baseTargets };
+    if (backgroundMode === 'dark') {
+      tierAwareTargets.fillIntensity = baseTargets.fillIntensity * computeDarkGemFillBoost(tierKeyRef.current);
+      gemDiagnostics.darkGemBoost = tierAwareTargets.fillIntensity - baseTargets.fillIntensity;
+    } else {
+      tierAwareTargets.exposure = computeLightModeExposure(tierKeyRef.current, baseTargets.exposure);
+      gemDiagnostics.darkGemBoost = 0;
+    }
+    sceneTargetsRef.current = tierAwareTargets;
     isSceneLerpingRef.current = true;
 
     // Set new background quad color targets
@@ -255,7 +324,7 @@ export const GemView: React.FC<Props> = React.memo(({
     }
   }, [backgroundMode]);
 
-  // ── Geometry update → immediate swap + reframe camera ──
+  // ── Geometry update → immediate swap + smooth camera reframe ──
   useEffect(() => {
     if (!meshRef.current || !cameraRef.current) return;
     const profile = getShapeProfile(shape);
@@ -265,7 +334,16 @@ export const GemView: React.FC<Props> = React.memo(({
     meshRef.current.geometry = createGemGeometry(shape, outerScale);
     oldGeom.dispose();
 
-    fitCameraToObject(cameraRef.current, meshRef.current, profile.cameraPadding, profile.yOffset);
+    if (GEM_FLAGS.smoothCameraLerp) {
+      // Compute where camera SHOULD be, but lerp there instead of snapping
+      const tempCam = cameraRef.current.clone();
+      fitCameraToObject(tempCam, meshRef.current, profile.cameraPadding, profile.yOffset);
+      cameraTargetZ.current = tempCam.position.z;
+      cameraTargetY.current = profile.yOffset;
+      gemDiagnostics.cameraLerping = true;
+    } else {
+      fitCameraToObject(cameraRef.current, meshRef.current, profile.cameraPadding, profile.yOffset);
+    }
   }, [shape, gemScale]);
 
   // ── Cleanup ──
@@ -464,6 +542,11 @@ export const GemView: React.FC<Props> = React.memo(({
       _fpsFrames = 0;
       _fpsLastTime = performance.now();
 
+      // Track drawingBuffer dimensions for size sync
+      // (catches navigation transitions, device rotation, late layout changes)
+      let lastDbW = gl.drawingBufferWidth;
+      let lastDbH = gl.drawingBufferHeight;
+
       const animate = () => {
         animFrameRef.current = requestAnimationFrame(animate);
 
@@ -641,8 +724,41 @@ export const GemView: React.FC<Props> = React.memo(({
           meshRef.current.position.y = floatY;
         }
 
+        // ── Smooth camera transition (shape changes) ──
+        if (cameraTargetZ.current !== null) {
+          const dz = cameraTargetZ.current - camera.position.z;
+          camera.position.z += dz * CAMERA_LERP_SPEED;
+          if (Math.abs(dz) < 0.005) {
+            camera.position.z = cameraTargetZ.current;
+            cameraTargetZ.current = null;
+            gemDiagnostics.cameraLerping = false;
+          }
+        }
+
         camera.position.x = Math.sin(t * 0.23) * 0.012;
-        camera.position.y = shapeProfile.yOffset + Math.cos(t * 0.31) * 0.008;
+        const baseY = cameraTargetY.current ?? shapeProfile.yOffset;
+        camera.position.y = baseY + Math.cos(t * 0.31) * 0.008;
+
+        // ── DrawingBuffer size sync (navigation transitions, device rotation) ──
+        const dbw = gl.drawingBufferWidth;
+        const dbh = gl.drawingBufferHeight;
+        if (dbw !== lastDbW || dbh !== lastDbH) {
+          renderer.setSize(dbw, dbh);
+          const oldAspect = lastDbW / (lastDbH || 1);
+          const newAspect = dbw / (dbh || 1);
+          camera.aspect = newAspect;
+          camera.updateProjectionMatrix();
+          // Re-fit camera if aspect ratio changed meaningfully (>2%)
+          if (Math.abs(newAspect - oldAspect) / Math.max(oldAspect, 0.01) > 0.02 && meshRef.current) {
+            const curProfile = getShapeProfile(shapeRef.current);
+            fitCameraToObject(camera, meshRef.current, curProfile.cameraPadding, curProfile.yOffset);
+            cameraTargetZ.current = null;
+            cameraTargetY.current = null;
+            gemDiagnostics.cameraLerping = false;
+          }
+          lastDbW = dbw;
+          lastDbH = dbh;
+        }
 
         renderer.render(scene, camera);
         gl.endFrameEXP();
@@ -656,6 +772,20 @@ export const GemView: React.FC<Props> = React.memo(({
           gemDiagnostics.fps = Math.round(_fpsFrames * 1000 / (now - _fpsLastTime));
           gemDiagnostics.drawCalls = renderer.info.render.calls;
           gemDiagnostics.triangles = renderer.info.render.triangles;
+
+          // Adaptive quality tracking (diagnostics only — expo-gl cannot change
+          // pixel ratio at runtime; drawingBuffer is fixed at device DPR).
+          // IMPORTANT: Never call renderer.setPixelRatio() after context creation
+          // on expo-gl — it causes a viewport/drawingBuffer mismatch that crops
+          // the render ("zoomed in" bug).
+          if (GEM_FLAGS.adaptivePixelRatio) {
+            if (gemDiagnostics.fps > 0 && gemDiagnostics.fps < FPS_THRESHOLD_DOWN) {
+              gemDiagnostics.qualityMode = 'standard';
+            } else if (gemDiagnostics.fps > FPS_THRESHOLD_UP) {
+              gemDiagnostics.qualityMode = 'hd';
+            }
+          }
+
           _fpsFrames = 0;
           _fpsLastTime = now;
         }

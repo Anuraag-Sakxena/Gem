@@ -28,6 +28,7 @@ import { TIER_PROFILES } from '../engine/tierProfiles';
 import { maskSerial } from '../engine/gemConfig';
 import { typography } from '../theme/typography';
 import { spacing, hitSlop } from '../theme/tokens';
+import { stagger } from '../motion';
 import { hapticLight } from '../utils/haptics';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
@@ -116,7 +117,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       <View style={styles.uiLayer} pointerEvents="box-none">
         {/* Header: tier + serial center, hamburger right */}
         <Animated.View
-          entering={FadeInDown.delay(100).duration(500)}
+          entering={FadeInDown.delay(stagger.fast).duration(500)}
           style={[styles.header, { paddingTop: insets.top + spacing.sm }]}
           pointerEvents="box-none"
         >
@@ -160,7 +161,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
         {/* Gem Details pill button */}
         <Animated.View
-          entering={FadeInDown.delay(400).duration(500)}
+          entering={FadeInDown.delay(stagger.fast * 4).duration(500)}
           style={[styles.bottomArea, { paddingBottom: insets.bottom + spacing.lg }]}
         >
           <Pressable

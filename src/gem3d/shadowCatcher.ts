@@ -25,7 +25,7 @@ export const SHADOW_Y = -1.3;
  * The shadow is slightly elliptical (wider than tall) via the geometry.
  */
 export function createContactShadow(): THREE.Mesh {
-  const texture = createRadialGradientTexture(64);
+  const texture = createRadialGradientTexture(128);
 
   const geo = new THREE.PlaneGeometry(2.2, 1.4);
   const mat = new THREE.MeshBasicMaterial({
@@ -62,8 +62,10 @@ function createRadialGradientTexture(size: number): THREE.DataTexture {
       const dx = x - cx;
       const dy = y - cy;
       const dist = Math.sqrt(dx * dx + dy * dy) / maxR; // 0..1
-      // Smooth falloff: strong center, soft edge
-      const alpha = Math.max(0, 1 - dist * dist) * 200; // 0..200
+      // Gaussian-like falloff: smoother, more natural shadow edges
+      const sigma = 0.45;
+      const gaussian = Math.exp(-(dist * dist) / (2 * sigma * sigma));
+      const alpha = gaussian * 220;
       const idx = (y * size + x) * 4;
       data[idx] = 0;     // R
       data[idx + 1] = 0; // G

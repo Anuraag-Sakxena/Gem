@@ -24,6 +24,7 @@
  */
 
 import * as THREE from 'three';
+import { GEM_FLAGS } from './featureFlags';
 
 /**
  * Build a procedural studio environment and return a PMREM texture.
@@ -177,6 +178,27 @@ export function createStudioEnvironment(
       );
       s.position.set(...pos);
       envScene.add(s);
+    }
+
+    // ── Knife-edge strip lights (facet edge micro-contrast) ──
+    // Ultra-thin strips at different angles create sharp specular lines
+    // that define individual facet edges — like real studio photography.
+    // No runtime cost: these are baked into the cubemap at init time.
+    if (GEM_FLAGS.edgeHighlights) {
+      const knifeGeo = new THREE.PlaneGeometry(16, 0.08);
+      const knifeMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF', side: THREE.DoubleSide });
+
+      const knife1 = new THREE.Mesh(knifeGeo, knifeMat);
+      knife1.position.set(0, 4.5, -4);
+      knife1.rotation.x = Math.PI / 12;
+      envScene.add(knife1);
+
+      const knife2Geo = new THREE.PlaneGeometry(16, 0.08);
+      const knife2Mat = new THREE.MeshBasicMaterial({ color: '#FFFFFF', side: THREE.DoubleSide });
+      const knife2 = new THREE.Mesh(knife2Geo, knife2Mat);
+      knife2.position.set(0, 1.5, -5.5);
+      knife2.rotation.z = Math.PI / 8;
+      envScene.add(knife2);
     }
 
     // Generate PMREM cubemap from the studio scene

@@ -20,3 +20,4 @@ export { LUXURY_SPECS } from './luxurySpecs';
 export type { LuxurySpec } from './luxurySpecs';
 export { applyEngravingShader, createEngravingTargets } from './engravingShader';
 export type { EngravingUniforms, EngravingTargets } from './engravingShader';
+export { GEM_FLAGS } from './featureFlags';

@@ -45,20 +45,24 @@ export const PremiumButton: React.FC<Props> = React.memo(
     fullWidth,
   }) => {
     const scale = useSharedValue(1);
+    const pressOpacity = useSharedValue(1);
     const isDisabled = disabled || loading;
 
     const animatedStyle = useAnimatedStyle(() => ({
       transform: [{ scale: scale.value }],
+      opacity: isDisabled ? opacityTokens.disabled : pressOpacity.value,
     }));
 
     const tapGesture = Gesture.Tap()
       .onBegin(() => {
         if (!isDisabled) {
           scale.value = withSpring(0.96, spring.snappy);
+          pressOpacity.value = withSpring(0.88, spring.snappy);
         }
       })
       .onFinalize(() => {
         scale.value = withSpring(1, spring.snappy);
+        pressOpacity.value = withSpring(1, spring.snappy);
       })
       .onEnd(() => {
         if (!isDisabled) {
@@ -78,7 +82,6 @@ export const PremiumButton: React.FC<Props> = React.memo(
             styles.container,
             sizeConfig.container,
             {
-              opacity: isDisabled ? opacityTokens.disabled : opacityTokens.full,
               backgroundColor: colors.bg,
               borderWidth: variant === 'ghost' ? 1 : 0,
               borderColor: colors.border,

@@ -30,7 +30,7 @@ import type { RootStackParamList } from '../navigation/RootNavigator';
 import { GemRenderer3D } from '../gem3d/GemRenderer3D';
 import { PremiumButton } from '../components/ui';
 import { useGemStore } from '../store/useGemStore';
-import { TIER_PROFILES } from '../engine/tierProfiles';
+import { TIER_PROFILES, TIER_ORDER, TierKey } from '../engine/tierProfiles';
 import { typography } from '../theme/typography';
 import { spacing, palette } from '../theme/tokens';
 import { easing } from '../motion';
@@ -49,7 +49,13 @@ const MATERIALIZE_FADE_MS = 800;
 const FLASH_PEAK_MS = 100;
 const FLASH_DECAY_MS = 450;
 const FLASH_COMPLETE_DELAY_MS = 600; // must exceed FLASH_PEAK_MS + FLASH_DECAY_MS (550ms)
-const FLASH_PEAK_OPACITY = 0.65;
+
+/** Tier-aware flash: higher tiers get more dramatic reveals */
+function getFlashPeakOpacity(tierKey: TierKey): number {
+  const idx = TIER_ORDER.indexOf(tierKey);
+  // Seed: 0.35, One: 0.85 — linear ramp
+  return 0.35 + (idx / Math.max(1, TIER_ORDER.length - 1)) * 0.50;
+}
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Reveal'>;
 type RevealPhase = 'idle' | 'animating' | 'materializing' | 'complete';
@@ -104,7 +110,7 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleFlash = useCallback(() => {
     flashOpacity.value = withSequence(
-      withTiming(FLASH_PEAK_OPACITY, { duration: FLASH_PEAK_MS }),
+      withTiming(getFlashPeakOpacity(tierKey), { duration: FLASH_PEAK_MS }),
       withTiming(0, { duration: FLASH_DECAY_MS, easing: easing.decelerate }),
     );
     hapticSuccess();
@@ -114,7 +120,7 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
       setGemInteractive(true);
       markRevealed();
     }, FLASH_COMPLETE_DELAY_MS);
-  }, [markRevealed, flashOpacity]);
+  }, [markRevealed, flashOpacity, tierKey]);
 
   const startReveal = useCallback(() => {
     if (phase !== 'idle') return; // prevent double-tap
@@ -176,8 +182,8 @@ export const RevealScreen: React.FC<Props> = ({ navigation }) => {
         />
       </Animated.View>
 
-      {/* Flash effect */}
-      <Animated.View style={[styles.flash, flashStyle]} pointerEvents="none" />
+      {/* Flash effect — tinted to tier glow color */}
+      <Animated.View style={[styles.flash, { backgroundColor: tier.glowColor }, flashStyle]} pointerEvents="none" />
 
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
@@ -294,7 +300,6 @@ const styles = StyleSheet.create({
   },
   flash: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: palette.white,
     zIndex: 100,
   },
   header: {

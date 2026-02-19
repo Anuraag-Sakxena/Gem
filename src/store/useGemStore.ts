@@ -34,6 +34,7 @@ import {
   loadPersistedBackgroundMode,
   clearAllPersistedState,
 } from '../utils/persistence';
+import { hapticHeavy } from '../utils/haptics';
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -178,6 +179,7 @@ export const useGemStore = create<GemStore>((set, get) => ({
     });
     persistTier(tier);
     persistSerial(serial);
+    hapticHeavy(); // significant state change deserves heavier feedback
   },
 
   setGemShape: (shape: GemShape) => {

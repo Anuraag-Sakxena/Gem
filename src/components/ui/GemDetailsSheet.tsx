@@ -178,7 +178,7 @@ export const GemDetailsSheet: React.FC = React.memo(() => {
 
   return (
     <Animated.View
-      entering={SlideInDown.duration(350).springify().damping(18)}
+      entering={SlideInDown.duration(400).springify().damping(16).stiffness(120)}
       exiting={SlideOutDown.duration(250)}
       style={styles.wrapper}
     >
@@ -187,7 +187,12 @@ export const GemDetailsSheet: React.FC = React.memo(() => {
 
       {/* Sheet */}
       <View style={styles.sheet}>
-        <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
+        <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
+
+        {/* Frosted glass drag handle (iOS standard) */}
+        <View style={styles.handleContainer}>
+          <View style={styles.handle} />
+        </View>
 
         {/* Close button */}
         <Pressable
@@ -312,6 +317,19 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radii['2xl'],
     borderTopRightRadius: radii['2xl'],
     overflow: 'hidden',
+    borderTopWidth: 0.5,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+  },
+  handleContainer: {
+    alignItems: 'center',
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
+  },
+  handle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.2)',
   },
   closeButton: {
     position: 'absolute',

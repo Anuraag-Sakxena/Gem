@@ -70,10 +70,10 @@ export function computeBackgroundColors(
     // Light mode: pearl studio sweep
     // Bright gem (high L) → slightly darker/cooler champagne bg
     // Dark gem (low L) → lighter warm pearl bg
-    const pearlTop = new THREE.Color('#F0ECE6');    // warm pearl
-    const pearlBot = new THREE.Color('#E5DFD7');    // deeper pearl
-    const champTop = new THREE.Color('#DDD5CB');    // champagne (for bright gems)
-    const champBot = new THREE.Color('#D0C8BC');    // deeper champagne
+    const pearlTop = new THREE.Color('#F2EDE6');    // warm pearl (refined V2)
+    const pearlBot = new THREE.Color('#E8E2D8');    // softer pearl
+    const champTop = new THREE.Color('#DFD6CA');    // champagne (for bright gems)
+    const champBot = new THREE.Color('#D2C9BC');    // deeper champagne
 
     const top = pearlTop.clone().lerp(champTop, blend);
     const bot = pearlBot.clone().lerp(champBot, blend);
@@ -83,10 +83,10 @@ export function computeBackgroundColors(
   // Dark mode: cinematic charcoal
   // Bright gem (high L) → deeper cool charcoal
   // Dark gem (low L) → warmer lifted charcoal
-  const warmTop = new THREE.Color('#14110F');   // warm lifted (dark gems)
-  const warmBot = new THREE.Color('#0C0A09');
-  const coolTop = new THREE.Color('#0A0A0C');   // deep cool (bright gems)
-  const coolBot = new THREE.Color('#050506');
+  const warmTop = new THREE.Color('#161210');   // warm slate (refined V2)
+  const warmBot = new THREE.Color('#0E0B0A');   // warm deep
+  const coolTop = new THREE.Color('#0C0B0E');   // deep charcoal
+  const coolBot = new THREE.Color('#070608');   // deep cool
 
   const top = warmTop.clone().lerp(coolTop, blend);
   const bot = warmBot.clone().lerp(coolBot, blend);
@@ -124,8 +124,10 @@ const bgFragmentShader = /* glsl */ `
     float vignette = 1.0 - dist * dist * uVignetteStrength;
     color *= vignette;
 
-    // Subtle film grain / dither to prevent banding on dark gradients
-    float noise = (hash(gl_FragCoord.xy) - 0.5) * 0.012;
+    // Perceptual dither: stronger in darks (where banding is most visible)
+    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float ditherStrength = mix(0.018, 0.006, luminance);
+    float noise = (hash(gl_FragCoord.xy) - 0.5) * ditherStrength;
     color += noise;
 
     gl_FragColor = vec4(color, 1.0);
